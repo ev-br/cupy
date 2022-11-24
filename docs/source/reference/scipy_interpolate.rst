@@ -15,3 +15,12 @@ Summary  statistics
    KroghInterpolator
    barycentric_interpolate
    krogh_interpolate
+
+
+Multivariate interpolation
+--------------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   RBFInterpolator
