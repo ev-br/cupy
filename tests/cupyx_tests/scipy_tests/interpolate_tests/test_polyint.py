@@ -569,3 +569,35 @@ class TestCubicHermiteSpline:
         r = p.roots(extrapolate=True)
         return p.c.shape[1], r.size
 
+class TestZeroSizeArrays:
+    # regression tests for gh-17241 : CubicSpline et al must not segfault
+    # when y.size == 0
+    # The two methods below are _almost_ the same, but not quite:
+    # one is for objects which have the `bc_type` argument (CubicSpline)
+    # and the other one is for those which do not (Pchip, Akima1D)
+
+    # XXX: add back the 2nd test method, w/ make_interp_spline & CubicSpline
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    @pytest.mark.parametrize('y', [xp.zeros((10, 0, 5)),
+                                   xp.zeros((10, 5, 0))])
+    @pytest.mark.parametrize('axis', [0, 1, 2])
+    @pytest.mark.parametrize('klass', ['PchipInterpolator',
+                                       'Akima1DInterpolator'])
+    def test_zero_size_2(self, xp, scp, cls, y, axis):
+        x = xp.arange(10)
+        xval = xp.arange(3)
+
+        cls = getattr(scp.interpolate, klass)
+        obj = cls(x, y)
+        assert obj(xval).size == 0
+        assert obj(xval).shape == xval.shape + y.shape[1:]
+
+        # Also check with an explicit non-default axis
+        yt = np.moveaxis(y, 0, axis)  # (10, 0, 5) --> (0, 10, 5) if axis=1 etc
+
+        obj = cls(x, yt, axis=axis)
+        sh = yt.shape[:axis] + (xval.size, ) + yt.shape[axis+1:]
+        assert obj(xval).size == 0
+        assert obj(xval).shape == sh
+
