@@ -357,3 +357,51 @@ class TestKrogh:
         P = scp.interpolate.KroghInterpolator(x, y)
         D = P.derivatives(xp.array(0))
         return D
+
+
+@testing.with_requires("scipy")
+class TestAkima1DInterpolator:
+    # in scipy, these tests are in test_interpolate.py
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_eval(self, xp, scp):
+        x = xp.arange(0., 11.)
+        y = xp.array([0., 2., 1., 3., 2., 6., 5.5, 5.5, 2.7, 5.1, 3.])
+        ak = scp.interpolate.Akima1DInterpolator(x, y)
+        xi = xp.array([0., 0.5, 1., 1.5, 2.5, 3.5, 4.5, 5.1, 6.5, 7.2,
+            8.6, 9.9, 10.])
+        return ak(xi)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_eval_2d(self, xp, scp):
+        x = xp.arange(0., 11.)
+        y = xp.array([0., 2., 1., 3., 2., 6., 5.5, 5.5, 2.7, 5.1, 3.])
+        y = xp.column_stack((y, 2. * y))
+        ak = scp.interpolate.Akima1DInterpolator(x, y)
+        xi = xp.array([0., 0.5, 1., 1.5, 2.5, 3.5, 4.5, 5.1, 6.5, 7.2,
+                       8.6, 9.9, 10.])
+        return ak(xi)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_eval_3d(self, xp, scp):
+        x = xp.arange(0., 11.)
+        y_ = xp.array([0., 2., 1., 3., 2., 6., 5.5, 5.5, 2.7, 5.1, 3.])
+        y = xp.empty((11, 2, 2))
+        y[:, 0, 0] = y_
+        y[:, 1, 0] = 2. * y_
+        y[:, 0, 1] = 3. * y_
+        y[:, 1, 1] = 4. * y_
+        ak = scp.interpolate.Akima1DInterpolator(x, y)
+        xi = xp.array([0., 0.5, 1., 1.5, 2.5, 3.5, 4.5, 5.1, 6.5, 7.2,
+                       8.6, 9.9, 10.])
+        return ak(xi)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_degenerate_case_multidimensional(self, xp, scp):
+        # This test is for the scipy issue gh-5683.
+        x = xp.array([0, 1, 2])
+        y = xp.vstack((x, x**2)).T
+        ak = scp.interpolate.Akima1DInterpolator(x, y)
+        x_eval = np.array([0.5, 1.5])
+        return ak(x_eval)
+
