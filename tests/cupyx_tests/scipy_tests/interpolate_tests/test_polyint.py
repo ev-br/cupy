@@ -627,3 +627,116 @@ class TestZeroSizeArrays:
         assert obj(xval).size == 0
         assert obj(xval).shape == sh
 
+
+def check_shape(xp, scp, interpolator_cls, x_shape, y_shape, deriv_shape=None,
+                axis=0, extra_args={}):
+    np.random.seed(1234)
+
+    x = [-1, 0, 1, 2, 3, 4]
+    s = list(range(1, len(y_shape)+1))
+    s.insert(axis % (len(y_shape)+1), 0)
+    y = np.random.rand(*((6,) + y_shape)).transpose(s)
+    if xp is cupy:
+        y = cupy.asarray(y)
+
+    xi = xp.zeros(x_shape)
+
+    if interpolator_cls is scp.interpolate.CubicHermiteSpline:
+        dydx = np.random.rand(*((6,) + y_shape)).transpose(s)
+        if xp is cupy:
+            dydx = cupy.asarray(dydx)
+
+        yi = interpolator_cls(x, y, dydx, axis=axis, **extra_args)(xi)
+    else:
+        yi = interpolator_cls(x, y, axis=axis, **extra_args)(xi)
+
+    target_shape = ((deriv_shape or ()) + y.shape[:axis]
+                    + x_shape + y.shape[axis:][1:])
+    testing.assert_equal(yi.shape, target_shape)
+
+    # check it works also with lists
+    if x_shape and y.size > 0:
+        if interpolator_cls is scp.interpolate.CubicHermiteSpline:
+            interpolator_cls(list(x), list(y), list(dydx), axis=axis,
+                             **extra_args)(list(xi))
+        else:
+            interpolator_cls(list(x), list(y), axis=axis,
+                             **extra_args)(list(xi))
+
+    # check also values
+    if xi.size > 0 and deriv_shape is None:
+        bs_shape = y.shape[:axis] + (1,)*len(x_shape) + y.shape[axis:][1:]
+        yv = y[((slice(None,),)*(axis % y.ndim)) + (1,)]
+        yv = yv.reshape(bs_shape)
+
+        yi, y = np.broadcast_arrays(yi, yv)
+        testing.assert_allclose(yi, y)
+
+
+SHAPES = [(), (0,), (1,), (6, 2, 5)]
+
+@testing.numpy_cupy_allclose(scipy_name='scp')
+def test_shapes(xp, scp):
+
+    def spl_interp(x, y, axis):
+        return scp.interpolate.make_interp_spline(x, y, axis=axis)
+
+    for ip in [scp.interpolate.KroghInterpolator,
+               scp.interpolate.BarycentricInterpolator,
+               scp.interpolate.CubicHermiteSpline,
+               scp.interpolate.PchipInterpolator,
+               scp.interpolate.Akima1DInterpolator,
+               # CubicSpline,   # XXX: add when implemented
+               spl_interp]:
+        for s1 in SHAPES:
+            for s2 in SHAPES:
+                for axis in range(-len(s2), len(s2)):
+                    check_shape(xp, scp, ip, s1, s2, None, axis)
+
+
+@testing.numpy_cupy_allclose(scipy_name='scp')
+def test_deriv_shapes(xp, scp):
+    def krogh_deriv(x, y, axis=0):
+        return scp.interpolate.KroghInterpolator(x, y, axis).derivative
+
+    def pchip_deriv(x, y, axis=0):
+        return scp.interpolate.PchipInterpolator(x, y, axis).derivative()
+
+    def pchip_deriv2(x, y, axis=0):
+        return scp.interpolate.PchipInterpolator(x, y, axis).derivative(2)
+
+    def pchip_antideriv(x, y, axis=0):
+        return scp.interpolate.PchipInterpolator(x, y, axis).derivative()
+
+    def pchip_antideriv2(x, y, axis=0):
+        return scp.interpolate.PchipInterpolator(x, y, axis).antiderivative(2)
+
+    def pchip_deriv_inplace(x, y, axis=0):
+        class P(scp.interpolate.PchipInterpolator):
+            def __call__(self, x):
+                return super().__call__(self, x, 1)
+            pass
+        return P(x, y, axis)
+
+    def akima_deriv(x, y, axis=0):
+        return scp.interpolate.Akima1DInterpolator(x, y, axis).derivative()
+
+    def akima_antideriv(x, y, axis=0):
+        return scp.interpolate.Akima1DInterpolator(x, y, axis).antiderivative()
+
+    def bspl_deriv(x, y, axis=0):
+        return scp.interpolate.make_interp_spline(x, y, axis=axis).derivative()
+
+    def bspl_antideriv(x, y, axis=0):
+        func = scp.interpolate.make_interp_spline
+        return func(x, y, axis=axis).antiderivative()
+
+    for ip in [krogh_deriv, pchip_deriv, pchip_deriv2, pchip_deriv_inplace,
+               pchip_antideriv, pchip_antideriv2, akima_deriv, akima_antideriv,
+               bspl_deriv, bspl_antideriv]:
+        for s1 in SHAPES:
+            for s2 in SHAPES:
+                for axis in range(-len(s2), len(s2)):
+                    check_shape(xp, scp, ip, s1, s2, (), axis)
+
+
