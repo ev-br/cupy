@@ -533,3 +533,39 @@ class TestPCHIP:
         p = scp.interpolate.PchipInterpolator([0, 1], [-1, 1])
         r = p.roots()
         return r
+
+
+@testing.with_requires("scipy")
+class TestCubicHermiteSpline:
+
+    @testing.numpy_cupy_allclose(scipy_name='scp', atol=1e-14)
+    def test_correctness(self, xp, scp):
+        x = [0, 2, 7]
+        y = [-1, 2, 3]
+        dydx = [0, 3, 7]
+        s = scp.interpolate.CubicHermiteSpline(x, y, dydx)
+        return s(x), s(x, 1)
+
+    def test_CubicHermiteSpline_error_handling(self):
+        x = [1, 2, 3]
+        y = [0, 3, 5]
+        dydx = [1, -1, 2, 3]
+        with pytest.raises(ValueError):
+            scp.interpolate.CubicHermiteSpline(x, y, dydx)
+
+        dydx_with_nan = [1, 0, cupy.nan]
+        with pytest.raises(ValueError):
+            scp.interpolate.CubicHermiteSpline(x, y, dydx_with_nan)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_roots_extrapolate_gh_11185(self, xp, scp):
+        x = xp.array([0.001, 0.002])
+        y = xp.array([1.66066935e-06, 1.10410807e-06])
+        dy = xp.array([-1.60061854, -1.600619])
+        p = scp.interpolate.CubicHermiteSpline(x, y, dy)
+
+        # roots(extrapolate=True) for a polynomial with a single interval
+        # should return all three real roots
+        r = p.roots(extrapolate=True)
+        return p.c.shape[1], r.size
+
