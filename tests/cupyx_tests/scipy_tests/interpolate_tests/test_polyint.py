@@ -1,3 +1,6 @@
+import io
+import warnings
+
 import numpy
 import pytest
 
@@ -405,3 +408,128 @@ class TestAkima1DInterpolator:
         x_eval = np.array([0.5, 1.5])
         return ak(x_eval)
 
+
+@testing.with_requires("scipy")
+class TestPCHIP:
+    def _make_random(self, xp, npts=20):
+        # NB: deliberately sample from numpy.random (random streams differ
+        # for numpy.random and cupy.random!)
+        numpy.random.seed(1234)
+        xi = numpy.sort(numpy.random.random(npts))
+        yi = numpy.random.random(npts)
+        if xp is cupy:
+            xi = cupy.asarray(xi)
+            yi = cupy.asarray(yi)
+        return xi, yi
+
+    def test_overshoot(self):
+        # PCHIP should not overshoot
+        xi, yi = self._make_random(cupy)
+        p = cupyx.scipy.interpolate.PchipInterpolator(xi, yi)
+        for i in range(len(xi) - 1):
+            x1, x2 = xi[i], xi[i + 1]
+            y1, y2 = yi[i], yi[i + 1]
+            if y1 > y2:
+                y1, y2 = y2, y1
+            xp = cupy.linspace(x1, x2, 10)
+            yp = p(xp)
+            assert (((y1 <= yp + 1e-15) & (yp <= y2 + 1e-15)).all())
+
+    def test_monotone(self):
+        # PCHIP should preserve monotonicty
+        xi, yi = self._make_random(cupy)
+        p = cupyx.scipy.interpolate.PchipInterpolator(xi, yi)
+        for i in range(len(xi) - 1):
+            x1, x2 = xi[i], xi[i + 1]
+            y1, y2 = yi[i], yi[i + 1]
+            xp = cupy.linspace(x1, x2, 10)
+            yp = p(xp)
+            assert (((y2-y1) * (yp[1:] - yp[:1]) > 0).all())
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_cast(self, xp, scp):
+        # regression test for integer input data, see gh-3453
+        data = xp.array([[0, 4, 12, 27, 47, 60, 79, 87, 99, 100],
+                         [-33, -33, -19, -2, 12, 26, 38, 45, 53, 55]])
+        data = data.astype(int)
+        xx = xp.arange(100)
+        curve = pchip(data[0], data[1])(xx)
+        return curve
+
+    @testing.numpy_cupy_allclose(scipy_name='scp', atol=5e-5)
+    def test_nag(self, xp, scp):
+        # Example from NAG C implementation,
+        # http://nag.com/numeric/cl/nagdoc_cl25/html/e01/e01bec.html
+        # suggested in gh-5326 as a smoke test for the way the derivatives
+        # are computed (see also gh-3453)
+        dataStr = '''
+          7.99   0.00000E+0
+          8.09   0.27643E-4
+          8.19   0.43750E-1
+          8.70   0.16918E+0
+          9.20   0.46943E+0
+         10.00   0.94374E+0
+         12.00   0.99864E+0
+         15.00   0.99992E+0
+         20.00   0.99999E+0
+        '''
+        data = cupy.loadtxt(io.StringIO(dataStr))
+        pch = pchip(data[:, 0], data[:, 1])
+
+        resultStr = '''
+           7.9900       0.0000
+           9.1910       0.4640
+          10.3920       0.9645
+          11.5930       0.9965
+          12.7940       0.9992
+          13.9950       0.9998
+          15.1960       0.9999
+          16.3970       1.0000
+          17.5980       1.0000
+          18.7990       1.0000
+          20.0000       1.0000
+        '''
+        result = cupy.loadtxt(io.StringIO(resultStr))
+        return pch(result(:, 0))
+#        assert_allclose(result[:,1], pch(result[:,0]), rtol=0., atol=5e-5)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_endslopes(self, xp, scp):
+        # this is a smoke test for gh-3453: PCHIP interpolator should not
+        # set edge slopes to zero if the data do not suggest zero edge
+        # derivatives
+        x = xp.array([0.0, 0.1, 0.25, 0.35])
+        y1 = xp.array([279.35, 0.5e3, 1.0e3, 2.5e3])
+        y2 = xp.array([279.35, 2.5e3, 1.50e3, 1.0e3])
+        return (scp.interpolate.PchipInterpolator(x, y1), 
+                scp.interpolate.PchipInterpolator(x, y2))
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_all_zeros(self, xp, scp):
+        x = xp.arange(10)
+        y = xp.zeros_like(x)
+
+        # this should work and not generate any warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings('error')
+            pch = scp.interpolate.PchipInterpolator(x, y)
+
+        xx = np.linspace(0, 9, 101)
+        return pch(xx)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_two_points(self, xp, scp):
+        # regression test for gh-6222: pchip([0, 1], [0, 1]) fails because
+        # it tries to use a three-point scheme to estimate edge derivatives,
+        # while there are only two points available.
+        # Instead, it should construct a linear interpolator.
+        x = xp.linspace(0, 1, 11)
+        p = scp.interpolate.PchipInterpolator([0, 1], [0, 2])
+        return p(x)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_roots(self, xp, scp):
+        # regression test for gh-6357: .roots method should work
+        p = scp.interpolate.PchipInterpolator([0, 1], [-1, 1])
+        r = p.roots()
+        return r
