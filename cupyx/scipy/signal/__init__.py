@@ -86,3 +86,5 @@ from cupyx.scipy.signal._lti_conversion import abcd_normalize   # NOQA
 from cupyx.scipy.signal._peak_finding import find_peaks  # NOQA
 from cupyx.scipy.signal._peak_finding import peak_prominences  # NOQA
 from cupyx.scipy.signal._peak_finding import peak_widths  # NOQA
+
+from cupyx.scipy.signal._spectral import lombscargle  # NOQA
