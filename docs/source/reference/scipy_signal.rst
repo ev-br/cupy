@@ -97,6 +97,24 @@ Low-level filter design functions
    abcd_normalize
 
 
+LTI representations
+-------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   zpk2tf
+   zpk2sos
+
+
+Spectral analysis
+-----------------
+
+.. autosummary::
+   :toctree: generated/
+
+   lombscargle
+
 
 Chirp Z-transform and Zoom FFT
 ------------------------------
