@@ -65,6 +65,8 @@ from cupyx.scipy.signal._iir_filter_conversions import cheb1ap  # NOQA
 from cupyx.scipy.signal._iir_filter_conversions import cheb2ap  # NOQA
 from cupyx.scipy.signal._iir_filter_conversions import ellipap  # NOQA
 
+from cupyx.scipy.signal.windows._windows import get_window  # NOQA
+
 from cupyx.scipy.signal._iir_filter_design import iirfilter  # NOQA
 from cupyx.scipy.signal._iir_filter_design import butter  # NOQA
 from cupyx.scipy.signal._iir_filter_design import cheby1  # NOQA
