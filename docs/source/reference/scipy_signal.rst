@@ -57,6 +57,7 @@ Filter design
    bilinear_zpk
    freqz
    freqz_zpk
+   sosfreqz
    firls
    savgol_coeffs
    iirfilter
@@ -69,9 +70,13 @@ Matlab-style IIR filter design
    :toctree: generated/
 
    butter
+   buttord
    ellip
+   ellipord
    cheby1
+   cheby1ord
    cheby2
+   cheby2ord
 
 
 Chirp Z-transform and Zoom FFT
