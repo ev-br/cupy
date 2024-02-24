@@ -535,56 +535,10 @@ def _make_periodic_spline(x, y, t, k, axis):
 
 # ### LSQ spline helpers
 
-def _lsq_solve_qr(x, y, t, k, w):
-    """Solve for the LSQ spline coeffs given x, y and knots.
-    `y` is always 2D: for 1D data, the shape is ``(m, 1)``.
-    `w` is always 1D: one weight value per `x` value.
-    """
-
-    """
-
-    # prepare the l.h.s.
-    # A, offset, nc = _bspl._data_matrix(x, t, k, w)
-    a_csr = BSpline.design_matrix(x, t, k)
-    a_w = (a_csr * w[:, None]).tocsr()
-    A = a_w.data.reshape((m, k+1))
-    offset = a_w.indices[::(k+1)]
-    nc = t.shape[0] - k - 1
-
-    # prepare the r.h.s.
-    assert y.ndim == 2
-    y_w = y * w[:, None]
-
-
-    c = cupy.ones(1)
-
-#    num_c = int(np.prod(c.shape[1:]))
-#    temp = cupy.empty(xp.shape[0] * (2 * k + 1))
-    """
-
-    qr_kernel = _get_module_func(QR_MODULE, 'dlartg', cupy.ones(1))
-
-    f = 0.5
-    g = 0.5
-    r = cupy.empty(1)
-    cs = cupy.empty(1)
-    sn = cupy.empty(1)
-
-    qr_kernel((1,), (1,),
-                  (f, g, cs, sn, r))
-
-    breakpoint()
-
-#    R = PackedMatrix(A, offset, nc)
-#    _bspl._qr_reduce(R, y_w)         # modifies arguments in-place
-#    c = _bspl._fpback(R, y_w)
-
-    return R, y_w, c
-
-
-
 QR_KERNEL = r'''
 #include <cuda/std/cmath>
+
+typedef long long int ssize_t ;
 
 /* 
  * Compute the parameters of the Givens transformation: LAPACK's dlartg replacement.
@@ -624,16 +578,186 @@ fprota(T c, T s, T a, T b, T *a_out, T *b_out) {
     *b_out = -s*a + c*b;
 }
 
+
+///////////// Bounds checking
+template<bool boundscheck> void _bcheck(ssize_t index, ssize_t size, ssize_t dim);
+
+/*
+template<>
+void _bcheck<true>(ssize_t index, ssize_t size, ssize_t dim) {
+    if (!((0 <= index) && (index < size))){
+        auto mesg = "Out of bounds with index = " + std::to_string(index) + " of size = ";
+        mesg = mesg + std::to_string(size) + " in dimension = " + std::to_string(dim);
+        throw(std::runtime_error(mesg) );
+    }
+}
+*/
+
+template<>
+void _bcheck<false>(ssize_t index, ssize_t size, ssize_t dim) { /* noop*/ }
+////////////////////////////
+
+
+template<typename T, bool boundscheck=true>
+struct Array2D
+{
+    T* data;
+    ssize_t nrows;
+    ssize_t ncols;
+    T& operator()(const ssize_t i, const ssize_t j) {
+        _bcheck<boundscheck>(i, nrows, 0);
+        _bcheck<boundscheck>(j, ncols, 1);
+        return *(data + ncols*i + j);
+    }
+    Array2D(T *ptr, ssize_t num_rows, ssize_t num_columns) : data(ptr), nrows(num_rows), ncols(num_columns) {};
+};
+
+
+// Flip boundschecking on/off here
+typedef Array2D<double, false> RealArray2D;
+typedef Array2D<const double, false> ConstRealArray2D;
+
+__global__ void
+qr_reduce(double *aptr, const ssize_t m, const ssize_t nz, // a(m, nz), packed
+               ssize_t *offset,                                 // offset(m)
+               const ssize_t nc,                                // dense would be a(m, nc)
+               double *yptr, const ssize_t ydim1,               // y(m, ydim2)
+               const ssize_t startrow=1
+)
+{
+    auto R = RealArray2D(aptr, m, nz);
+    auto y = RealArray2D(yptr, m, ydim1);
+
+    for (ssize_t i=startrow; i < m; ++i) {
+        ssize_t oi = offset[i];
+        ssize_t i_nc = i ? i < nc : nc; // std::min(i, nc), the diagonal
+        for (ssize_t j=oi; j < nc; ++j) {
+
+            // rotate only the lower diagonal
+            if (j >= i_nc) {
+                break;
+            }
+
+            // in dense format: diag a1[j, j] vs a1[i, j]
+            double c, s, r;
+            dlartg(R(j, 0), R(i, 0), &c, &s, &r);
+
+            // rotate l.h.s.
+            R(j, 0) = r;
+            for (ssize_t l=1; l < R.ncols; ++l) {
+                double r0, r1;
+                //  std::tie(R(j, l), R(i, l-1)) = fprota(c, s, R(j, l), R(i, l));
+                fprota(c, s, R(j, l), R(i, l), &r0, &r1);
+                R(j, l) = r0;
+                R(i, l-1) = r1;
+            }
+            R(i, R.ncols-1) = 0.0;
+
+            // rotate r.h.s.
+            for (ssize_t l=0; l < y.ncols; ++l) {
+                //std::tie(y(j, l), y(i, l)) = fprota(c, s, y(j, l), y(i, l));
+                double r0, r1;
+                fprota(c, s, y(j, l), y(i, l), &r0, &r1);
+                y(j, l) = r0;
+                y(i, l) = r1;
+            }
+        }
+        if (i < nc) {
+            offset[i] = i;
+        }
+
+    } // for(i = ...
+}
 '''
 
 TYPES = ['double']
 
 QR_MODULE = cupy.RawModule(
     code=QR_KERNEL, options=('-std=c++14',),
-    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES],
+    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES] + ['qr_reduce'],
+ #   name_expressions= ['qr_reduce'],
     # for std::tuple
 #    options="--expt-relaxed-constexpr"
 )
+
+
+def _lsq_solve_qr(x, y, t, k, w):
+    """Solve for the LSQ spline coeffs given x, y and knots.
+    `y` is always 2D: for 1D data, the shape is ``(m, 1)``.
+    `w` is always 1D: one weight value per `x` value.
+    """
+
+    
+    breakpoint()
+
+    # prepare the l.h.s.
+    # A, offset, nc = _bspl._data_matrix(x, t, k, w)
+  #  a_csr = BSpline.design_matrix(x, t, k)
+  #  raise ValueError("a_csr work with dense instead!")
+
+    a_csr = BSpline.design_matrix(x, t, k)
+
+    A = a_csr.data.reshape(-1, k+1) * w[:, None]
+
+#    a_w = a_csr.data.reshape((-1, k+1)) * w[:, None] 
+#    a_w = (a_csr * w[:, None]).tocsr()
+#    A = a_c.data.reshape((m, k+1))
+    offset = a_csr.indices[::(k+1)]
+    nc = t.shape[0] - k - 1
+
+    # prepare the r.h.s.
+    assert y.ndim == 2
+    y_w = y * w[:, None]
+
+
+    c = cupy.ones(1)
+
+#    num_c = int(np.prod(c.shape[1:]))
+#    temp = cupy.empty(xp.shape[0] * (2 * k + 1))
+    
+
+    qr_kernel = _get_module_func(QR_MODULE, 'dlartg', cupy.ones(1))
+
+    f = 0.5
+    g = 0.5
+    r = cupy.empty(1)
+    cs = cupy.empty(1)
+    sn = cupy.empty(1)
+
+    qr_kernel((1,), (1,),
+                  (f, g, cs, sn, r))
+
+    qr_reduce = _get_module_func(QR_MODULE, 'qr_reduce')
+    qr_reduce((1,), (1,),
+            (A, A.shape[0], A.shape[1],
+             offset,
+             nc,
+             y_w, y_w.shape[1])
+    )
+    
+
+    breakpoint()
+
+#    R = PackedMatrix(A, offset, nc)
+#    _bspl._qr_reduce(R, y_w)         # modifies arguments in-place
+#    c = _bspl._fpback(R, y_w)
+
+# this segfaults:
+# In [1]: import cupy
+# In [2]: from cupyx.scipy.interpolate._bspline2 import make_lsq_spline
+# In [3]: make_lsq_spline(cupy.arange(10), cupy.arange(10), t=[0]*4 + [10]*4)
+
+
+    
+    """
+    void qr_reduce(double *aptr, const ssize_t m, const ssize_t nz, // a(m, nz), packed
+                   ssize_t *offset,                                 // offset(m)
+                   const ssize_t nc,                                // dense would be a(m, nc)
+                   double *yptr, const ssize_t ydim1,               // y(m, ydim2)
+                   const ssize_t startrow=1
+    """
+
+    return R, y_w, c
 
 
 
