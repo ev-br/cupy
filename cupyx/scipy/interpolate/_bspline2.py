@@ -584,7 +584,7 @@ def _lsq_solve_qr(x, y, t, k, w):
 
 
 QR_KERNEL = r'''
-# include <cuda/std/cmath>
+#include <cuda/std/cmath>
 
 /* 
  * Compute the parameters of the Givens transformation: LAPACK's dlartg replacement.
@@ -593,7 +593,8 @@ QR_KERNEL = r'''
  * https://github.com/scipy/scipy/blob/v1.12.0/scipy/interpolate/fitpack/fpgivs.f
  */
 template<typename T>
-__global__ void dlartg(const T f, const T g, T *cs, T *sn, T *r) {
+__global__ void
+dlartg(const T f, const T g, T *cs, T *sn, T *r) {
 
     T piv = cuda::std::abs(f);
 
@@ -607,7 +608,21 @@ __global__ void dlartg(const T f, const T g, T *cs, T *sn, T *r) {
 
     *cs = g / *r;
     *sn = f / *r;
-};
+}
+
+
+/*
+ * Givens-rotate a pair [a, b] -> [a_out, b_out]
+ *
+ * no std::tuple with nvrtc (nvcc --expt-relaxed-constexpr is OK, but not nvrtc?)
+ * thus make it a subroutine
+ */
+template<typename T>
+__global__ inline void
+fprota(T c, T s, T a, T b, T *a_out, T *b_out) {
+    *a_out =  c*a + s* b;
+    *b_out = -s*a + c*b;
+}
 
 '''
 
@@ -615,7 +630,10 @@ TYPES = ['double']
 
 QR_MODULE = cupy.RawModule(
     code=QR_KERNEL, options=('-std=c++14',),
-    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES])
+    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES],
+    # for std::tuple
+#    options="--expt-relaxed-constexpr"
+)
 
 
 
