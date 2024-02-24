@@ -4,9 +4,11 @@ from math import prod
 from numpy.core.multiarray import normalize_axis_index
 
 import cupy
+from cupy._core._scalar import get_typename
+
 from cupyx.scipy import sparse
 from cupyx.scipy.sparse.linalg import spsolve
-from cupyx.scipy.interpolate._bspline import _get_dtype, _as_float_array
+from cupyx.scipy.interpolate._bspline import _get_dtype, _as_float_array, _get_module_func
 
 from cupyx.scipy.interpolate._bspline import (
     _get_module_func, INTERVAL_MODULE, D_BOOR_MODULE, BSpline)
@@ -529,3 +531,196 @@ def _make_periodic_spline(x, y, t, k, axis):
     coef = cupy.ascontiguousarray(coef.reshape((n + k - 1,) + y.shape[1:]))
     return BSpline.construct_fast(t, coef, k,
                                   extrapolate='periodic', axis=axis)
+
+
+# ### LSQ spline helpers
+
+def _lsq_solve_qr(x, y, t, k, w):
+    """Solve for the LSQ spline coeffs given x, y and knots.
+    `y` is always 2D: for 1D data, the shape is ``(m, 1)``.
+    `w` is always 1D: one weight value per `x` value.
+    """
+
+    """
+
+    # prepare the l.h.s.
+    # A, offset, nc = _bspl._data_matrix(x, t, k, w)
+    a_csr = BSpline.design_matrix(x, t, k)
+    a_w = (a_csr * w[:, None]).tocsr()
+    A = a_w.data.reshape((m, k+1))
+    offset = a_w.indices[::(k+1)]
+    nc = t.shape[0] - k - 1
+
+    # prepare the r.h.s.
+    assert y.ndim == 2
+    y_w = y * w[:, None]
+
+
+    c = cupy.ones(1)
+
+#    num_c = int(np.prod(c.shape[1:]))
+#    temp = cupy.empty(xp.shape[0] * (2 * k + 1))
+    """
+
+    qr_kernel = _get_module_func(QR_MODULE, 'dlartg', cupy.ones(1))
+
+    f = 0.5
+    g = 0.5
+    r = cupy.empty(1)
+    cs = cupy.empty(1)
+    sn = cupy.empty(1)
+
+    qr_kernel((1,), (1,),
+                  (f, g, cs, sn, r))
+
+    breakpoint()
+
+#    R = PackedMatrix(A, offset, nc)
+#    _bspl._qr_reduce(R, y_w)         # modifies arguments in-place
+#    c = _bspl._fpback(R, y_w)
+
+    return R, y_w, c
+
+
+
+QR_KERNEL = r'''
+# include <cuda/std/cmath>
+
+/* 
+ * Compute the parameters of the Givens transformation: LAPACK's dlartg replacement.
+ *
+ * Naive computation, following
+ * https://github.com/scipy/scipy/blob/v1.12.0/scipy/interpolate/fitpack/fpgivs.f
+ */
+template<typename T>
+__global__ void dlartg(const T f, const T g, T *cs, T *sn, T *r) {
+
+    T piv = cuda::std::abs(f);
+
+    if (piv >= g) {
+        T sq = g / f;
+        *r = piv * cuda::std::sqrt(1.0 + sq*sq);
+    } else {
+        T sq = f / g;
+        *r = g * cuda::std::sqrt(1.0 + sq*sq);
+    }
+
+    *cs = g / *r;
+    *sn = f / *r;
+};
+
+'''
+
+TYPES = ['double']
+
+QR_MODULE = cupy.RawModule(
+    code=QR_KERNEL, options=('-std=c++14',),
+    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES])
+
+
+
+
+
+def make_lsq_spline(x, y, t, k=3, w=None, axis=0, check_finite=True, *, method="qr"):
+    r"""Construct a BSpline via an LSQ (Least SQuared) fit.
+
+    The result is a linear combination
+
+        .. math::
+            S(x) = \sum_j c_j B_j(x; t)
+
+    of the B-spline basis elements, :math:`B_j(x; t)`, which minimizes
+
+        .. math::
+            \sum_{j} \left( w_j \times (S(x_j) - y_j) \right)^2
+
+    Parameters
+    ----------
+    x : array_like, shape (m,)
+        Abscissas.
+    y : array_like, shape (m, ...)
+        Ordinates.
+    t : array_like, shape (n + k + 1,).
+        Knots.
+        Knots and data points must satisfy Schoenberg-Whitney conditions.
+    k : int, optional
+        B-spline degree. Default is cubic, ``k = 3``.
+    w : array_like, shape (m,), optional
+        Weights for spline fitting. Must be positive. If ``None``,
+        then weights are all equal.
+        Default is ``None``.
+    axis : int, optional
+        Interpolation axis. Default is zero.
+    check_finite : bool, optional
+        Whether to check that the input arrays contain only finite numbers.
+        Disabling may give a performance gain, but may result in problems
+        (crashes, non-termination) if the inputs do contain infinities or NaNs.
+        Default is True.
+
+    Returns
+    -------
+    b : a BSpline object of the degree ``k`` with knots ``t``.
+
+    See Also
+    --------
+    scipy.interpolate.make_lsq_spline
+    BSpline : base class representing the B-spline objects
+    make_interp_spline : a similar factory function for interpolating splines
+
+
+    Notes
+    -----
+    The number of data points must be larger than the spline degree ``k``.
+    Knots ``t`` must satisfy the Schoenberg-Whitney conditions,
+    i.e., there must be a subset of data points ``x[j]`` such that
+    ``t[j] < x[j] < t[j+k+1]``, for ``j=0, 1,...,n-k-2``.
+
+    """
+    x = _as_float_array(x, check_finite)
+    y = _as_float_array(y, check_finite)
+    t = _as_float_array(t, check_finite)
+    if w is not None:
+        w = _as_float_array(w, check_finite)
+    else:
+        w = cupy.ones_like(x)
+    k = operator.index(k)
+    axis = normalize_axis_index(axis, y.ndim)
+
+    y = cupy.moveaxis(y, axis, 0)    # now internally interp axis is zero
+
+    if x.ndim != 1 or any(x[1:] - x[:-1] <= 0):
+        raise ValueError("Expect x to be a 1-D sorted array_like.")
+    if x.ndim != 1:
+        raise ValueError("Expect x to be a 1-D sequence.")
+    if x.shape[0] < k+1:
+        raise ValueError("Need more x points.")
+    if k < 0:
+        raise ValueError("Expect non-negative k.")
+    if t.ndim != 1 or any(t[1:] - t[:-1] < 0):
+        raise ValueError("Expect t to be a 1-D sorted array_like.")
+        raise ValueError("Expect t to be a 1D strictly increasing sequence.")
+    if x.size != y.shape[0]:
+        raise ValueError(f'Shapes of x {x.shape} and y {y.shape} are incompatible')
+    if k > 0 and any((x < t[k]) | (x > t[-k])):
+        raise ValueError('Out of bounds w/ x = %s.' % x)
+    if x.size != w.size:
+        raise ValueError(f'Shapes of x {x.shape} and w {w.shape} are incompatible')
+    if method != "qr":
+        raise ValueError(f"{method = } is not supported.")
+    if any(x[1:] - x[:-1] < 0):
+        raise ValueError("Expect x to be a 1D non-decreasing sequence.")
+
+    # number of coefficients
+    nc = t.size - k - 1
+
+    # multiple r.h.s
+    extradim = prod(y.shape[1:])
+    yy = y.reshape(-1, extradim)
+
+    # solve
+    _, _, c = _lsq_solve_qr(x, yy, t, k, w)
+
+    # restore the shape of `c` for both single and multiple r.h.s.
+    c = c.reshape((nc,) + y.shape[1:])
+    c = np.ascontiguousarray(c)
+    return BSpline.construct_fast(t, c, k, axis=axis)
