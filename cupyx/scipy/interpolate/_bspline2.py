@@ -11,7 +11,7 @@ from cupyx.scipy.sparse.linalg import spsolve
 from cupyx.scipy.interpolate._bspline import _get_dtype, _as_float_array, _get_module_func
 
 from cupyx.scipy.interpolate._bspline import (
-    _get_module_func, INTERVAL_MODULE, D_BOOR_MODULE, BSpline)
+    _get_module_func, INTERVAL_MODULE, D_BOOR_MODULE, DESIGN_MAT_MODULE, BSpline)
 
 
 #################################
@@ -535,6 +535,114 @@ def _make_periodic_spline(x, y, t, k, axis):
 
 # ### LSQ spline helpers
 
+def dlartg(f, g): #, T *cs, T *sn, T *r) {
+    """ Construct the Givens rotation
+
+    [f | g] = G [r | 0]
+    """
+    import math
+
+
+    # https://www.netlib.org/lapack/explore-3.1.1-html/dlartg.f.html
+    if g == 0:
+        cs = 1.0
+        sn = 0.0
+        r = f
+    elif f == 0:
+        cs = 1.0
+        sn = 0.0
+        r = g
+    else:
+#      IF( G.EQ.ZERO ) THEN
+#         CS = ONE
+#         SN = ZERO
+#         R = F
+#      ELSE IF( F.EQ.ZERO ) THEN
+#         CS = ZERO
+#         SN = ONE
+#         R = G
+
+        piv = abs(f)
+        if f >= g:
+            sq = g / f
+            r = piv * math.sqrt(1.0 + sq*sq)
+        else:
+            sq = g / g
+            r = g * math.sqrt(1.0 + sq*sq)
+        cs = g / r
+        sn = f / r
+    return cs, sn, r
+
+
+def fprota(c, s, a, b):
+    """Givens rotate [a, b].
+
+    [aa] = [ c s] @ [a]
+    [bb]   [-s c]   [b]
+
+    """
+    aa =  c*a + s*b
+    bb = -s*a + c*b
+    return aa, bb
+
+
+
+def _qr_reduce_py(a_p, y, startrow=1):
+    """This is a python counterpart of the `_qr_reduce` routine,
+    defined in interpolate/src/__fitpack.h
+
+    NB: works out-of-place!
+
+    """
+    from scipy.linalg.lapack import dlartg
+
+    # unpack the packed format
+    a, offset, nc = a_p
+
+#    a = a_p.a
+#    offset = a_p.offset
+#    nc = a_p.nc
+
+    m, nz = a.shape
+
+    assert y.shape[0] == m
+    R = a.copy()
+    y1 = y.copy()
+
+    for i in range(startrow, m):
+        oi = offset[i].item()
+        for j in range(oi, nc):
+            # rotate only the lower diagonal
+            if j >= min(i, nc):
+                break
+#            if R[j, 0] == 0:   # XXX not in C (also scipy!)
+#                continue
+
+            # In dense format: diag a1[j, j] vs a1[i, j]
+            c, s, r = dlartg(R[j, 0], R[i, 0])
+
+            if c != c or s != s:
+                breakpoint()
+
+            # rotate l.h.s.
+            R[j, 0] = r
+            for l in range(1, nz):
+                R[j, l], R[i, l-1] = fprota(c, s, R[j, l], R[i, l])
+            R[i, -1] = 0.0
+
+            # rotate r.h.s.
+            for l in range(y1.shape[1]):
+                y1[j, l], y1[i, l] = fprota(c, s, y1[j, l], y1[i, l])
+
+  #  breakpoint()
+
+    # convert to packed
+    offs = list(range(R.shape[0]))
+    #  R_p = _b.PackedMatrix(R, np.array(offs), nc)
+
+    return R, y1
+
+
 QR_KERNEL = r'''
 #include <cuda/std/cmath>
 
@@ -548,7 +656,7 @@ typedef long long int ssize_t ;
  */
 template<typename T>
 __global__ void
-dlartg(const T f, const T g, T *cs, T *sn, T *r) {
+dlartg(T f, T g, T *cs, T *sn, T *r) {
 
     T piv = cuda::std::abs(f);
 
@@ -566,69 +674,35 @@ dlartg(const T f, const T g, T *cs, T *sn, T *r) {
 
 
 /*
- * Givens-rotate a pair [a, b] -> [a_out, b_out]
+ * Givens-rotate a pair [f, g] -> [f_out, g_out]
  *
  * no std::tuple with nvrtc (nvcc --expt-relaxed-constexpr is OK, but not nvrtc?)
  * thus make it a subroutine
  */
 template<typename T>
-__global__ inline void
-fprota(T c, T s, T a, T b, T *a_out, T *b_out) {
-    *a_out =  c*a + s* b;
-    *b_out = -s*a + c*b;
+__global__ void
+fprota(T c, T s, T f, T g, T *f_out, T *g_out) {
+    *f_out =  c*f + s*g;
+    *f_out = -s*f + c*g;
 }
 
 
-///////////// Bounds checking
-template<bool boundscheck> void _bcheck(ssize_t index, ssize_t size, ssize_t dim);
-
-/*
-template<>
-void _bcheck<true>(ssize_t index, ssize_t size, ssize_t dim) {
-    if (!((0 <= index) && (index < size))){
-        auto mesg = "Out of bounds with index = " + std::to_string(index) + " of size = ";
-        mesg = mesg + std::to_string(size) + " in dimension = " + std::to_string(dim);
-        throw(std::runtime_error(mesg) );
-    }
-}
-*/
-
-template<>
-void _bcheck<false>(ssize_t index, ssize_t size, ssize_t dim) { /* noop*/ }
-////////////////////////////
-
-
-template<typename T, bool boundscheck=true>
-struct Array2D
-{
-    T* data;
-    ssize_t nrows;
-    ssize_t ncols;
-    T& operator()(const ssize_t i, const ssize_t j) {
-        _bcheck<boundscheck>(i, nrows, 0);
-        _bcheck<boundscheck>(j, ncols, 1);
-        return *(data + ncols*i + j);
-    }
-    Array2D(T *ptr, ssize_t num_rows, ssize_t num_columns) : data(ptr), nrows(num_rows), ncols(num_columns) {};
-};
-
-
-// Flip boundschecking on/off here
-typedef Array2D<double, false> RealArray2D;
-typedef Array2D<const double, false> ConstRealArray2D;
+// 2D array indexing: R(i, j)
+#define IDX(i, j, ncols) ( (ncols)*(i) + (j) )
 
 __global__ void
-qr_reduce(double *aptr, const ssize_t m, const ssize_t nz, // a(m, nz), packed
-               ssize_t *offset,                                 // offset(m)
-               const ssize_t nc,                                // dense would be a(m, nc)
-               double *yptr, const ssize_t ydim1,               // y(m, ydim2)
-               const ssize_t startrow=1
+qr_reduce(double *a, int m, int nz, // a(m, nz), packed
+          ssize_t *offset,          // offset(m)
+          int nc,                   // dense would be a(m, nc)
+          double *y, int ydim1,     // y(m, ydim2)
+          int startrow=1
 )
 {
-    auto R = RealArray2D(aptr, m, nz);
-    auto y = RealArray2D(yptr, m, ydim1);
+ //   auto R = RealArray2D(aptr, m, nz);
+ //   auto y = RealArray2D(yptr, m, ydim1);
 
     for (ssize_t i=startrow; i < m; ++i) {
+  //  for (ssize_t i=startrow; i < 4; ++i) {
         ssize_t oi = offset[i];
         ssize_t i_nc = i ? i < nc : nc; // std::min(i, nc), the diagonal
         for (ssize_t j=oi; j < nc; ++j) {
@@ -639,27 +713,38 @@ qr_reduce(double *aptr, const ssize_t m, const ssize_t nz, // a(m, nz), packed
             }
 
             // in dense format: diag a1[j, j] vs a1[i, j]
+            //dlartg(R(j, 0), R(i, 0), &c, &s, &r);
+
             double c, s, r;
-            dlartg(R(j, 0), R(i, 0), &c, &s, &r);
+            dlartg(a[IDX(j, 0, nz)],    // R(j, 0)
+                   a[IDX(i, 0, nz)],    // R(i, 0)
+                   &c,
+                   &s,
+                   &r);
 
             // rotate l.h.s.
-            R(j, 0) = r;
-            for (ssize_t l=1; l < R.ncols; ++l) {
+            a[IDX(j, 0, nz)] = r;  //R(j, 0) = r;
+            for (ssize_t l=1; l < nz; ++l) {
                 double r0, r1;
                 //  std::tie(R(j, l), R(i, l-1)) = fprota(c, s, R(j, l), R(i, l));
-                fprota(c, s, R(j, l), R(i, l), &r0, &r1);
-                R(j, l) = r0;
-                R(i, l-1) = r1;
+                fprota(c, s, 
+                       a[IDX(j, l, nz)], a[IDX(i, l, nz)],
+                       &r0, &r1);
+                a[IDX(j, l, nz)] = r0;
+                a[IDX(i, l-1, nz)] = r1;
             }
-            R(i, R.ncols-1) = 0.0;
+            // R(i, R.ncols-1) = 0.0;
+            a[IDX(i, nz-1, nz)] = 0.0;
 
             // rotate r.h.s.
-            for (ssize_t l=0; l < y.ncols; ++l) {
+            for (ssize_t l=0; l < ydim1; ++l) {
                 //std::tie(y(j, l), y(i, l)) = fprota(c, s, y(j, l), y(i, l));
                 double r0, r1;
-                fprota(c, s, y(j, l), y(i, l), &r0, &r1);
-                y(j, l) = r0;
-                y(i, l) = r1;
+                fprota(c, s,
+                       y[IDX(j, l, ydim1)], y[IDX(i, l, ydim1)],
+                       &r0, &r1);
+                y[IDX(j, l, ydim1)] = r0; // y(j, l) = r0;
+                y[IDX(i, l, ydim1)] = r1; // y(i, l) = r1;
             }
         }
         if (i < nc) {
@@ -675,9 +760,6 @@ TYPES = ['double']
 QR_MODULE = cupy.RawModule(
     code=QR_KERNEL, options=('-std=c++14',),
     name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES] + ['qr_reduce'],
- #   name_expressions= ['qr_reduce'],
-    # for std::tuple
-#    options="--expt-relaxed-constexpr"
 )
 
 
@@ -686,57 +768,49 @@ def _lsq_solve_qr(x, y, t, k, w):
     `y` is always 2D: for 1D data, the shape is ``(m, 1)``.
     `w` is always 1D: one weight value per `x` value.
     """
-
-    
-    breakpoint()
-
     # prepare the l.h.s.
-    # A, offset, nc = _bspl._data_matrix(x, t, k, w)
-  #  a_csr = BSpline.design_matrix(x, t, k)
-  #  raise ValueError("a_csr work with dense instead!")
 
-    a_csr = BSpline.design_matrix(x, t, k)
+    # NB: this is equivalent, only dynamically selects indices.dtype
+    # a_csr = BSpline.design_matrix(x, t, k)
+    # A = a_csr.data.reshape(-1, k+1) * w[:, None]
+    # offset = a_csr.indices[::(k+1)]
 
-    A = a_csr.data.reshape(-1, k+1) * w[:, None]
+    from ._bspline import _make_design_matrix
+    m = x.shape[0]
+    indices = cupy.empty(m*(k+1), dtype=cupy.int64)
+    # data, indices = _make_design_matrix(x, t, k, True, indices)
+    A, indices = _make_design_matrix(x, t, k, True, indices)
 
-#    a_w = a_csr.data.reshape((-1, k+1)) * w[:, None] 
-#    a_w = (a_csr * w[:, None]).tocsr()
-#    A = a_c.data.reshape((m, k+1))
-    offset = a_csr.indices[::(k+1)]
+    #A = data.reshape((m, k+1))
+    offset = indices[::(k+1)].copy()
     nc = t.shape[0] - k - 1
 
     # prepare the r.h.s.
     assert y.ndim == 2
     y_w = y * w[:, None]
 
+  #  breakpoint()
 
-    c = cupy.ones(1)
+    R = A.reshape((m, k+1))
+    R, y1 = _qr_reduce_py((R, offset, nc), y_w)
+    c = fpback(R, nc, y1)
+    return R, y1, c
 
-#    num_c = int(np.prod(c.shape[1:]))
-#    temp = cupy.empty(xp.shape[0] * (2 * k + 1))
-    
-
-    qr_kernel = _get_module_func(QR_MODULE, 'dlartg', cupy.ones(1))
-
-    f = 0.5
-    g = 0.5
-    r = cupy.empty(1)
-    cs = cupy.empty(1)
-    sn = cupy.empty(1)
-
-    qr_kernel((1,), (1,),
-                  (f, g, cs, sn, r))
-
+    """
     qr_reduce = _get_module_func(QR_MODULE, 'qr_reduce')
     qr_reduce((1,), (1,),
-            (A, A.shape[0], A.shape[1],
+            (A, m, k+1,
              offset,
              nc,
-             y_w, y_w.shape[1])
+             y_w, y_w.shape[1], 1)
     )
-    
 
     breakpoint()
+
+
+    c = fpback(A, nc, y_w)
+    """
+
 
 #    R = PackedMatrix(A, offset, nc)
 #    _bspl._qr_reduce(R, y_w)         # modifies arguments in-place
@@ -748,19 +822,25 @@ def _lsq_solve_qr(x, y, t, k, w):
 # In [3]: make_lsq_spline(cupy.arange(10), cupy.arange(10), t=[0]*4 + [10]*4)
 
 
-    
+    return A, y_w, c
+
+
+
+def fpback(R, nc, y):
+    """Backsubsitution solve upper triangular banded `R @ c = y.`
+    `R` is in the "packed" format: `R[i, :]` is `a[i, i:i+k+1]`
     """
-    void qr_reduce(double *aptr, const ssize_t m, const ssize_t nz, // a(m, nz), packed
-                   ssize_t *offset,                                 // offset(m)
-                   const ssize_t nc,                                // dense would be a(m, nc)
-                   double *yptr, const ssize_t ydim1,               // y(m, ydim2)
-                   const ssize_t startrow=1
-    """
+    _, nz = R.shape
+    assert y.shape[0] == R.shape[0]
 
-    return R, y_w, c
-
-
-
+    c = cupy.zeros_like(y[:nc])
+    c[nc-1, ...] = y[nc-1, ...] / R[nc-1, 0]
+    for i in range(nc-2, -1, -1):
+        nel = min(nz, nc-i)
+        # NB: broadcast R across trailing dimensions of `c`.
+        summ = (R[i, 1:nel, None] * c[i+1:i+nel, ...]).sum(axis=0)
+        c[i, ...] = ( y[i] - summ ) / R[i, 0]
+    return c
 
 
 def make_lsq_spline(x, y, t, k=3, w=None, axis=0, check_finite=True, *, method="qr"):
@@ -864,5 +944,5 @@ def make_lsq_spline(x, y, t, k=3, w=None, axis=0, check_finite=True, *, method="
 
     # restore the shape of `c` for both single and multiple r.h.s.
     c = c.reshape((nc,) + y.shape[1:])
-    c = np.ascontiguousarray(c)
+    c = cupy.ascontiguousarray(c)
     return BSpline.construct_fast(t, c, k, axis=axis)

@@ -456,3 +456,204 @@ class TestInterpPeriodic:
         cub = interpolate.CubicSpline(x.get(), y.get(), bc_type='periodic')
         cupy.testing.assert_allclose(b(x),
                                      cub(x.get()), atol=1e-14)
+
+
+def _augknt(x, k):
+    """Construct a knot vector appropriate for the order-k interpolation."""
+    return _np.r_[(x[0],)*k, x, (x[-1],)*k]
+
+
+'''
+class TestGivensQR:
+    # Test row-by-row QR factorization, used for the LSQ spline construction.
+    # This is implementation detail; still test it separately.
+    def _get_xyt(self, n):
+        k = 3
+        x = cupy.arange(n, dtype=float)
+        y = x**3 + 1/(1+x)
+
+        from csi._bspline import _not_a_knot
+        t = _not_a_knot(x, k)
+        return x, y, t, k
+
+    def test_vs_full(self):
+        n = 10
+        x, y, t, k = self._get_xyt(n)
+
+        # design matrix
+        a_csr = csi.BSpline.design_matrix(x, t, k)
+
+        # dense QR
+        q, r = sl.qr(a_csr.todense())
+        qTy = q.T @ y
+
+        # prepare the PackedMatrix to factorize
+        # convert to "packed" format
+        m, nc = a_csr.shape
+        assert nc == t.shape[0] - k - 1
+
+        offset = a_csr.indices[::(k+1)]
+        offset = np.ascontiguousarray(offset, dtype=np.intp)
+        A = a_csr.data.reshape(m, k+1)
+
+        R = _b.PackedMatrix(A, offset, nc)
+        y_ = y[:, None]     # _qr_reduce requires `y` a 2D array
+        _bspl._qr_reduce(R, y_)         # modifies arguments in-place        
+
+        # signs may differ
+        assert_allclose(np.minimum(R.todense() + r,
+                                   R.todense() - r), 0, atol=1e-15)
+        assert_allclose(np.minimum(abs(qTy - y_[:, 0]),
+                                   abs(qTy + y_[:, 0])), 0, atol=2e-13)
+
+        # sign changes are consistent between Q and R:
+        c_full = sl.solve(r, qTy)
+        c_banded = _bspl._fpback(R, y_)
+        assert_allclose(c_full, c_banded[:, 0], atol=5e-13)
+
+    def test_py_vs_compiled(self):
+        # test _qr_reduce vs a python implementation
+        n = 10
+        x, y, t, k = self._get_xyt(n)
+
+        # design matrix
+        a_csr = BSpline.design_matrix(x, t, k)
+        m, nc = a_csr.shape
+        assert nc == t.shape[0] - k - 1
+
+        offset = a_csr.indices[::(k+1)]
+        offset = np.ascontiguousarray(offset, dtype=np.intp)
+        A = a_csr.data.reshape(m, k+1)
+
+        R = _b.PackedMatrix(A, offset, nc)
+        y_ = y[:, None]
+
+        RR, yy = _qr_reduce_py(R, y_)
+        _bspl._qr_reduce(R, y_)   # in-place
+
+        assert_allclose(RR.a, R.a, atol=1e-15)
+        assert_equal(RR.offset, R.offset)
+        assert RR.nc == R.nc
+        assert_allclose(yy, y_, atol=1e-15)
+
+    # Test C-level construction of the design matrix
+
+    def test_data_matrix(self):
+        n = 10
+        x, y, t, k = self._get_xyt(n)
+        w = np.arange(1, n+1, dtype=float)
+        A, offset, nc = _bspl._data_matrix(x, t, k, w)
+
+        m = x.shape[0]
+        a_csr = BSpline.design_matrix(x, t, k)
+        a_w = (a_csr * w[:, None]).tocsr()
+        A_ = a_w.data.reshape((m, k+1))
+        offset_ = a_w.indices[::(k+1)]
+
+        assert_allclose(A, A_, atol=1e-15)
+        assert_equal(offset, offset_)
+        assert nc == t.shape[0] - k - 1
+
+    def test_fpback(self):
+        n = 10
+        x, y, t, k = self._get_xyt(n)
+        y = np.c_[y, y**2]
+        A, offset, nc = _bspl._data_matrix(x, t, k, w=np.ones_like(x))
+        R = _b.PackedMatrix(A, offset, nc)
+        _bspl._qr_reduce(R, y)
+
+        c = fpback(R, y)
+        cc = _bspl._fpback(R, y)
+
+        assert_allclose(cc, c, atol=1e-14)
+'''
+
+class TestLSQ:
+    #
+    # Test make_lsq_spline
+    #
+    """
+    np.random.seed(1234)
+    n, k = 13, 3
+    x = np.sort(np.random.random(n))
+    y = np.random.random(n)
+    t = _augknt(np.linspace(x[0], x[-1], 7), k)
+    """
+
+    def _get_xytk(self, xp, n=13, k=3):
+        _np.random.seed(1234)
+        x = _np.sort(_np.random.random(n))
+        y = _np.random.random(n)
+        t = _np.r_[(x[0],)*k,
+                   _np.linspace(x[0], x[-1], 7),
+                   (x[-1],)*k]
+        return xp.asarray(x), xp.asarray(y), xp.asarray(t), k
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_lstsq(self, xp, scp):
+        # check LSQ construction vs a full matrix version
+        x, y, t, k = self._get_xytk(xp)
+        b = scp.interpolate.make_lsq_spline(x, y, t, k)
+        return b.c
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_weights_unity(self, xp, scp):
+        # weights = 1 is same as None
+        x, y, t, k = self._get_xytk(xp)
+        w = xp.ones(x.size)
+        b_w = scp.interpolate.make_lsq_spline(x, y, t, k, w=w)
+        return b_w.c
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_weights_arange(self, xp, scp):
+        # weights = 1 is same as None
+        x, y, t, k = self._get_xytk(xp)
+        w = xp.arange(x.size)
+        b_w = scp.interpolate.make_lsq_spline(x, y, t, k, w=w)
+        return b_w.c
+
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_multiple_rhs(self, xp, scp):
+        n = 11
+        x, y, t, k = self._get_xytk(xp, n=n)
+        y = _np.random.random(size=(n, 5, 6, 7))
+        y = xp.asarray(y)
+
+        b = scp.interpolate.make_lsq_spline(x, y, t, k)
+        return b.c.shape
+
+    @pytest.mark.xfail
+    def test_complex(self):
+        # cmplx-valued `y`
+        x, t, k = self.x, self.t, self.k
+        yc = self.y * (1. + 2.j)
+
+        b = make_lsq_spline(x, yc, t, k)
+        b_re = make_lsq_spline(x, yc.real, t, k)
+        b_im = make_lsq_spline(x, yc.imag, t, k)
+
+        assert_allclose(b(x), b_re(x) + 1.j*b_im(x), atol=1e-15, rtol=1e-15)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_int_xy(self, xp, scp):
+        x = xp.arange(10).astype(int)
+        y = xp.arange(10).astype(int)
+        #t = _augknt(x, k=1)
+        t = xp.r_[x[0], x, x[-1]]
+
+        # Cython chokes on "buffer type mismatch"
+        b = scp.interpolate.make_lsq_spline(x, y, t, k=1)
+        return b.c
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_sliced_input(self, xp, scp):
+        # Cython code chokes on non C contiguous arrays
+        xx = xp.linspace(-1, 1, 100)
+        x = xx[::3]
+        y = xx[::3]
+        # t = _augknt(x, 1)
+        t = xp.r_[x[0], x, x[-1]]
+        b = scp.interpolate.make_lsq_spline(x, y, t, k=1)
+        return b.c
+
