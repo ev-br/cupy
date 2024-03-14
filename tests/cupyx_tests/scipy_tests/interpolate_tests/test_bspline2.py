@@ -612,7 +612,6 @@ class TestLSQ:
         b_w = scp.interpolate.make_lsq_spline(x, y, t, k, w=w)
         return b_w.c
 
-
     @testing.numpy_cupy_allclose(scipy_name='scp')
     def test_multiple_rhs(self, xp, scp):
         n = 11
