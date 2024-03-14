@@ -986,6 +986,23 @@ cdef extern from '../../cupy_lapack.h' nogil:
         const int *csrRowPtr, const int *csrColInd, const cuDoubleComplex *b,
         double tol, int reorder, cuDoubleComplex *x, int *singularity)
 
+    int cusolverSpScsrlsqvqrHost(
+        SpHandle handle, int m, int n, int nnz, const MatDescr descrA,
+        const float* csrValA, const int* csrRowPtrA, const int* csrColIndA,
+        const float* b, float tol, int *rankA, float* x, int* p, float *min_norm)
+    int cusolverSpDcsrlsqvqrHost(
+        SpHandle handle, int m, int n, int nnz, const MatDescr descrA,
+        const double* csrValA, const int* csrRowPtrA, const int* csrColIndA,
+        const double* b, double tol, int *rankA, double* x, int* p, double *min_norm)
+    int cusolverSpCcsrlsqvqrHost(
+        SpHandle handle, int m, int n, int nnz, const MatDescr descrA,
+        const cuComplex* csrValA, const int* csrRowPtrA, const int* csrColIndA,
+        const cuComplex* b, float tol, int *rankA, cuComplex* x, int* p, float *min_norm)
+    int cusolverSpZcsrlsqvqrHost(
+        SpHandle handle, int m, int n, int nnz, const MatDescr descrA,
+        const cuDoubleComplex* csrValA, const int* csrRowPtrA, const int* csrColIndA,
+        const cuDoubleComplex* b, double tol, int *rankA, cuDoubleComplex* x, int* p, double *min_norm)
+
     int cusolverSpScsreigvsi(
         SpHandle handle, int m, int nnz,
         const MatDescr descrA, const float *csrValA,
@@ -3597,6 +3614,21 @@ cpdef zcsrlsvqr(intptr_t handle, int m, int nnz, size_t descrA, size_t csrVal,
             <const int*>csrColInd, <const cuDoubleComplex*>b, tol, reorder,
             <cuDoubleComplex*>x, <int*>singularity)
     check_status(status)
+
+cpdef scsrlsqvqr(intptr_t handle, int m, int n, int nnz, size_t descrA,
+                 size_t csrValA, size_t csrRowPtrA, size_t csrColIndA,
+                 size_t b, float tol, size_t rankA, size_t x, size_t p, size_t min_norm):
+    cdef int status
+    _spSetStream(handle)
+    with nogil:
+        status = cusolverSpScsrlsqvqrHost(
+            <SpHandle>handle, m, n, nnz, <const MatDescr> descrA,
+            <const float*> csrValA, <const int*> csrRowPtrA,
+            <const int*> csrColIndA, <const float*> b,
+            tol, <int*>rankA, <float*> x, <int*> p, <float*>min_norm)
+    check_status(status)
+
+# XXX other lsq variants
 
 cpdef scsreigvsi(intptr_t handle, int m, int nnz, size_t descrA,
                  size_t csrValA, size_t csrRowPtrA, size_t csrColIndA,

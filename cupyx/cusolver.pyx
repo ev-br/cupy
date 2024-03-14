@@ -76,6 +76,7 @@ _available_cuda_version = {
     'gesv': (10020, None),
     'gels': (11000, None),
     'csrlsvqr': (9000, None),
+    'csrlsqvqr': (9000, None),
 }
 
 _available_hip_version = {
@@ -90,6 +91,7 @@ _available_hip_version = {
     'gesv': (_numpy.inf, None),
     'gels': (_numpy.inf, None),
     'csrlsvqr': (_numpy.inf, None),
+    'csrlsqvqr': (_numpy.inf, None),
 }
 
 _available_compute_capability = {
@@ -864,6 +866,76 @@ def csrlsvqr(A, b, tol=0, reorder=1):
                        'tolerance {} (singularity: {})'.
                        format(tol, singularity))
     return x
+
+
+def csrlsqvqr(A, b, tol=0):
+    """Solve the LSQ problem ``Ax = b`` using QR factorization.
+    """
+
+    if not check_availability('csrlsqvqr'):
+        raise RuntimeError('csrlsqvqr is not available.')
+
+    if not _cupyx.scipy.sparse.isspmatrix_csr(A):
+        raise ValueError('A must be CSR sparse matrix')
+    if not A.shape[0] >= A.shape[1]:
+        raise ValueError(f'A must be tall matrix.')
+    if not isinstance(b, _cupy.ndarray):
+        raise ValueError('b must be cupy.ndarray')
+    if b.ndim != 1:
+        raise ValueError('b.ndim must be 1 (actual: {})'.format(b.ndim))
+    if not (A.shape[0] == A.shape[1] == b.shape[0]):
+        raise ValueError('invalid shape')
+    if A.dtype != b.dtype:
+        raise TypeError('dtype mismatch')
+
+    dtype = A.dtype
+    if dtype.char == 'f':
+        t = 's'
+    elif dtype.char == 'd':
+        t = 'd'
+    elif dtype.char == 'F':
+        t = 'c'
+    elif dtype.char == 'D':
+        t = 'z'
+    else:
+        raise TypeError('Invalid dtype (actual: {})'.format(dtype))
+    solve = getattr(_cusolver, t + 'csrlsqvqr')
+
+    tol = max(tol, 0)
+    m = A.shape[0]
+    n = A.shape[1]
+    b = _internal_ascontiguousarray(b)
+    x = _cupy.empty((n,), dtype=dtype)
+    rankA = _cupy.empty((1,), dtype=int)
+    p = _cupy.empty((n,), dtype=int)
+    min_norm = _cupy.empty((1,), dtype=float)  # FIXME: float/double
+
+
+    """
+cpdef scsrlsqvqr(intptr_t handle, int m, int n, int nnz, size_t descrA,
+                 size_t csrValA, size_t csrRowPtrA, size_t csrColIndA,
+                 size_t b, float tol, size_t rankA, size_t x, size_t p, size_t min_norm):
+    cdef int status
+    _spSetStream(handle)
+    with nogil:
+        status = cusolverSpScsrlsqvqr(
+            <SpHandle>handle, m, n, nnz, <const MatDescr> descrA,
+            <const float*> csrValA, <const int*> csrRowPtrA,
+            <const int*> csrColIndA, <const float*> b,
+            tol, <int*>rankA, <float*> x, <int*> p, <float*>min_norm)
+    check_status(status)
+    """
+
+    handle = _device.get_cusolver_sp_handle()
+    solve(handle, m, n, A.nnz, A._descr.descriptor, A.data.data.ptr,
+          A.indptr.data.ptr, A.indices.data.ptr, b.data.ptr, tol,
+          rankA.data.ptr, x.data.ptr, p.data.ptr, min_norm.data.ptr
+    )
+
+    breakpoint()
+
+    return x
+
 
 
 cpdef _geqrf_orgqr_batched(a, mode):

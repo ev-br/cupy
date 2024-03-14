@@ -709,6 +709,11 @@ cpdef zcsrlsvqr(intptr_t handle, int m, int nnz, size_t descrA, size_t csrVal,
                 size_t csrRowPtr, size_t csrColInd, size_t b, double tol,
                 int reorder, size_t x, size_t singularity)
 
+cpdef scsrlsqvqr(intptr_t handle, int m, int n, int nnz, size_t descrA,
+                 size_t csrValA, size_t csrRowPtrA, size_t csrColIndA,
+                 size_t b, float tol, size_t rankA, size_t x, size_t p, size_t min_norm)
+# XXX other lsq variants
+
 cpdef scsreigvsi(intptr_t handle, int m, int nnz, size_t descrA,
                  size_t csrValA, size_t csrRowPtrA, size_t csrColIndA,
                  float mu0, size_t x0, int maxite, float eps, size_t mu,
