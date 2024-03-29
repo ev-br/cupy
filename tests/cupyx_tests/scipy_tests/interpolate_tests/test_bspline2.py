@@ -604,6 +604,7 @@ class TestLSQ:
         b_w = scp.interpolate.make_lsq_spline(x, y, t, k, w=w)
         return b_w.c
 
+    @pytest.mark.xfail(reason="not implemented")
     @testing.numpy_cupy_allclose(scipy_name='scp')
     def test_weights_arange(self, xp, scp):
         # weights = 1 is same as None

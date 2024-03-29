@@ -535,231 +535,57 @@ def _make_periodic_spline(x, y, t, k, axis):
 
 # ### LSQ spline helpers
 
-def dlartg(f, g): #, T *cs, T *sn, T *r) {
-    """ Construct the Givens rotation
-
-    [f | g] = G [r | 0]
-    """
-    import math
-
-
-    # https://www.netlib.org/lapack/explore-3.1.1-html/dlartg.f.html
-    if g == 0:
-        cs = 1.0
-        sn = 0.0
-        r = f
-    elif f == 0:
-        cs = 1.0
-        sn = 0.0
-        r = g
-    else:
-#      IF( G.EQ.ZERO ) THEN
-#         CS = ONE
-#         SN = ZERO
-#         R = F
-#      ELSE IF( F.EQ.ZERO ) THEN
-#         CS = ZERO
-#         SN = ONE
-#         R = G
-
-        piv = abs(f)
-        if f >= g:
-            sq = g / f
-            r = piv * math.sqrt(1.0 + sq*sq)
-        else:
-            sq = g / g
-            r = g * math.sqrt(1.0 + sq*sq)
-        cs = g / r
-        sn = f / r
-    return cs, sn, r
-
-
-def fprota(c, s, a, b):
-    """Givens rotate [a, b].
-
-    [aa] = [ c s] @ [a]
-    [bb]   [-s c]   [b]
-
-    """
-    aa =  c*a + s*b
-    bb = -s*a + c*b
-    return aa, bb
-
-
-
-def _qr_reduce_py(a_p, y, startrow=1):
-    """This is a python counterpart of the `_qr_reduce` routine,
-    defined in interpolate/src/__fitpack.h
-
-    NB: works out-of-place!
-
-    """
-    from scipy.linalg.lapack import dlartg
-
-    # unpack the packed format
-    a, offset, nc = a_p
-
-#    a = a_p.a
-#    offset = a_p.offset
-#    nc = a_p.nc
-
-    m, nz = a.shape
-
-    assert y.shape[0] == m
-    R = a.copy()
-    y1 = y.copy()
-
-    for i in range(startrow, m):
-        oi = offset[i].item()
-        for j in range(oi, nc):
-            # rotate only the lower diagonal
-            if j >= min(i, nc):
-                break
-#            if R[j, 0] == 0:   # XXX not in C (also scipy!)
-#                continue
-
-            # In dense format: diag a1[j, j] vs a1[i, j]
-            c, s, r = dlartg(R[j, 0], R[i, 0])
-
-            if c != c or s != s:
-                breakpoint()
-
-            # rotate l.h.s.
-            R[j, 0] = r
-            for l in range(1, nz):
-                R[j, l], R[i, l-1] = fprota(c, s, R[j, l], R[i, l])
-            R[i, -1] = 0.0
-
-            # rotate r.h.s.
-            for l in range(y1.shape[1]):
-                y1[j, l], y1[i, l] = fprota(c, s, y1[j, l], y1[i, l])
-
-  #  breakpoint()
-
-    # convert to packed
-    offs = list(range(R.shape[0]))
-    #  R_p = _b.PackedMatrix(R, np.array(offs), nc)
-
-    return R, y1
-
 
 QR_KERNEL = r'''
-#include <cuda/std/cmath>
-
 typedef long long int ssize_t ;
 
 /* 
  * Compute the parameters of the Givens transformation: LAPACK's dlartg replacement.
  *
  * Naive computation, following
- * https://github.com/scipy/scipy/blob/v1.12.0/scipy/interpolate/fitpack/fpgivs.f
- */
-template<typename T>
-__global__ void
-dlartg(T f, T g, T *cs, T *sn, T *r) {
-
-    T piv = cuda::std::abs(f);
-
-    if (piv >= g) {
-        T sq = g / f;
-        *r = piv * cuda::std::sqrt(1.0 + sq*sq);
-    } else {
-        T sq = f / g;
-        *r = g * cuda::std::sqrt(1.0 + sq*sq);
-    }
-
-    *cs = g / *r;
-    *sn = f / *r;
-}
-
-
-/*
- * Givens-rotate a pair [f, g] -> [f_out, g_out]
+ * https://www.netlib.org/lapack/explore-3.1.1-html/dlartg.f.html
  *
- * no std::tuple with nvrtc (nvcc --expt-relaxed-constexpr is OK, but not nvrtc?)
- * thus make it a subroutine
+ * cf also  https://github.com/scipy/scipy/blob/v1.12.0/scipy/interpolate/fitpack/fpgivs.f
  */
 template<typename T>
 __global__ void
-fprota(T c, T s, T f, T g, T *f_out, T *g_out) {
-    *f_out =  c*f + s*g;
-    *f_out = -s*f + c*g;
-}
+dlartg(T *f, T *g, T *cs, T *sn, T *r) {
 
+    if (*g == 0) {
+        *cs = 1.0;
+        *sn = 0.0;
+        *r = *f;
+    }
+    else if (*f == 0){
+        *cs = 0.0;
+        *sn = 1.0;
+        *r = *g;
+    }
+    else {
+        T piv = fabs(*f);
 
-// 2D array indexing: R(i, j)
-#define IDX(i, j, ncols) ( (ncols)*(i) + (j) )
-
-__global__ void
-qr_reduce(double *a, int m, int nz, // a(m, nz), packed
-          ssize_t *offset,          // offset(m)
-          int nc,                   // dense would be a(m, nc)
-          double *y, int ydim1,     // y(m, ydim2)
-          int startrow=1
-)
-{
- //   auto R = RealArray2D(aptr, m, nz);
- //   auto y = RealArray2D(yptr, m, ydim1);
-
-    for (ssize_t i=startrow; i < m; ++i) {
-  //  for (ssize_t i=startrow; i < 4; ++i) {
-        ssize_t oi = offset[i];
-        ssize_t i_nc = i ? i < nc : nc; // std::min(i, nc), the diagonal
-        for (ssize_t j=oi; j < nc; ++j) {
-
-            // rotate only the lower diagonal
-            if (j >= i_nc) {
-                break;
-            }
-
-            // in dense format: diag a1[j, j] vs a1[i, j]
-            //dlartg(R(j, 0), R(i, 0), &c, &s, &r);
-
-            double c, s, r;
-            dlartg(a[IDX(j, 0, nz)],    // R(j, 0)
-                   a[IDX(i, 0, nz)],    // R(i, 0)
-                   &c,
-                   &s,
-                   &r);
-
-            // rotate l.h.s.
-            a[IDX(j, 0, nz)] = r;  //R(j, 0) = r;
-            for (ssize_t l=1; l < nz; ++l) {
-                double r0, r1;
-                //  std::tie(R(j, l), R(i, l-1)) = fprota(c, s, R(j, l), R(i, l));
-                fprota(c, s, 
-                       a[IDX(j, l, nz)], a[IDX(i, l, nz)],
-                       &r0, &r1);
-                a[IDX(j, l, nz)] = r0;
-                a[IDX(i, l-1, nz)] = r1;
-            }
-            // R(i, R.ncols-1) = 0.0;
-            a[IDX(i, nz-1, nz)] = 0.0;
-
-            // rotate r.h.s.
-            for (ssize_t l=0; l < ydim1; ++l) {
-                //std::tie(y(j, l), y(i, l)) = fprota(c, s, y(j, l), y(i, l));
-                double r0, r1;
-                fprota(c, s,
-                       y[IDX(j, l, ydim1)], y[IDX(i, l, ydim1)],
-                       &r0, &r1);
-                y[IDX(j, l, ydim1)] = r0; // y(j, l) = r0;
-                y[IDX(i, l, ydim1)] = r1; // y(i, l) = r1;
-            }
-        }
-        if (i < nc) {
-            offset[i] = i;
+        if (piv >= *g) {
+            T sq = *g / *f;
+            *r = piv * sqrt(1.0 + sq*sq);
+        } else {
+            T sq = *f / *g;
+            *r = *g * sqrt(1.0 + sq*sq);
         }
 
-    } // for(i = ...
+        *cs = *f / *r;
+        *sn = *g / *r;
+    }
 }
+
 '''
+
+
 
 TYPES = ['double']
 
 QR_MODULE = cupy.RawModule(
     code=QR_KERNEL, options=('-std=c++14',),
-    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES] + ['qr_reduce'],
+    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES] , #+ ['qr_reduce'],
 )
 
 
@@ -788,8 +614,6 @@ def _lsq_solve_qr(x, y, t, k, w):
     # prepare the r.h.s.
     assert y.ndim == 2
     y_w = y * w[:, None]
-
-  #  breakpoint()
 
     R = A.reshape((m, k+1))
     R, y1 = _qr_reduce_py((R, offset, nc), y_w)
@@ -841,6 +665,119 @@ def fpback(R, nc, y):
         summ = (R[i, 1:nel, None] * c[i+1:i+nel, ...]).sum(axis=0)
         c[i, ...] = ( y[i] - summ ) / R[i, 0]
     return c
+
+
+
+
+def dlartg(f, g): #, T *cs, T *sn, T *r) {
+    """ Construct the Givens rotation
+
+    [f | g] = G [r | 0]
+    """
+    import math
+
+    # https://www.netlib.org/lapack/explore-3.1.1-html/dlartg.f.html
+    if g == 0:
+        cs = 1.0
+        sn = 0.0
+        r = f
+    elif f == 0:
+        cs = 0.0
+        sn = 1.0
+        r = g
+    else:
+        piv = abs(f)
+        if f >= g:
+            sq = g / f
+            r = piv * math.sqrt(1.0 + sq*sq)
+        else:
+            sq = f / g
+            r = g * math.sqrt(1.0 + sq*sq)
+        sn = g / r
+        cs = f / r
+    return cs, sn, r
+
+
+def fprota(c, s, a, b):
+    """Givens rotate [a, b].
+
+    [aa] = [ c s] @ [a]
+    [bb]   [-s c]   [b]
+
+    """
+    aa =  c*a + s*b
+    bb = -s*a + c*b
+    return aa, bb
+
+
+
+
+def _qr_reduce_py(a_p, y, startrow=1):
+    """This is a python counterpart of the `_qr_reduce` routine,
+    defined in interpolate/src/__fitpack.h
+
+    NB: works out-of-place!
+
+    """
+    from scipy.linalg.lapack import dlartg as sc_dlartg
+
+    dlartg2 = _get_module_func(QR_MODULE, 'dlartg<double>')
+
+
+    # unpack the packed format
+    a, offset, nc = a_p
+
+    m, nz = a.shape
+
+    assert y.shape[0] == m
+    R = a.copy()
+    y1 = y.copy()
+
+    for i in range(startrow, m):
+        oi = offset[i].item()
+        for j in range(oi, nc):
+            # rotate only the lower diagonal
+            if j >= min(i, nc):
+                break
+#            if R[j, 0] == 0:   # XXX not in C (also scipy!)
+#                continue
+
+            # In dense format: diag a1[j, j] vs a1[i, j]
+            c, s, r = sc_dlartg(R[j, 0], R[i, 0])
+
+            c2, s2, r2 = dlartg(R[j, 0], R[i, 0])
+
+            from cupy.testing import assert_allclose
+            assert_allclose(cupy.r_[c2, s2, r2], cupy.r_[c, s, r], atol=1e-15)
+
+     #       breakpoint()
+            c3 = cupy.empty(1)
+            s3 = cupy.empty(1)
+            r3 = cupy.empty(1)
+            dlartg2((1,), (1,),
+                    (R[j, 0], R[i, 0], c3, s3, r3)
+            )
+            assert_allclose(cupy.r_[c3, s3, r3], cupy.r_[c, s, r], atol=1e-15)
+
+
+            if c != c or s != s:
+                breakpoint()
+
+            # rotate l.h.s.
+            R[j, 0] = r
+            for l in range(1, nz):
+                R[j, l], R[i, l-1] = fprota(c, s, R[j, l], R[i, l])
+            R[i, -1] = 0.0
+
+            # rotate r.h.s.
+            for l in range(y1.shape[1]):
+                y1[j, l], y1[i, l] = fprota(c, s, y1[j, l], y1[i, l])
+
+
+    # convert to packed
+    offs = list(range(R.shape[0]))
+
+    return R, y1
 
 
 def make_lsq_spline(x, y, t, k=3, w=None, axis=0, check_finite=True, *, method="qr"):
