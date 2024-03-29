@@ -537,7 +537,7 @@ def _make_periodic_spline(x, y, t, k, axis):
 
 
 QR_KERNEL = r'''
-typedef long long int ssize_t ;
+typedef long long ssize_t ;
 
 /* 
  * Compute the parameters of the Givens transformation: LAPACK's dlartg replacement.
@@ -577,6 +577,86 @@ dlartg(T *f, T *g, T *cs, T *sn, T *r) {
     }
 }
 
+
+/*
+ * Givens-rotate a pair [f, g] -> [f_out, g_out]
+ */
+template<typename T>
+__global__ void
+fprota(T c, T s, T f, T g, T *f_out, T *g_out) {
+    *f_out =  c*f + s*g;
+    *f_out = -s*f + c*g;
+}
+
+
+
+// 2D array indexing: R(i, j)
+#define IDX(i, j, ncols) ( (ncols)*(i) + (j) )
+
+__global__ void
+qr_reduce(double *a, int m, int nz, // a(m, nz), packed
+          ssize_t *offset,          // offset(m)
+          int nc,                   // dense would be a(m, nc)
+          double *y, int ydim1,     // y(m, ydim2)
+          int startrow=1
+)
+{
+ //   auto R = RealArray2D(aptr, m, nz);
+ //   auto y = RealArray2D(yptr, m, ydim1);
+
+    for (ssize_t i=startrow; i < m; i++) {
+//    for (ssize_t i=startrow; i < 2; i++) {
+        ssize_t oi = offset[i];
+        ssize_t i_nc = i ? i < nc : nc; // std::min(i, nc), the diagonal
+        for (ssize_t j=oi; j < nc; j++) {
+
+            // rotate only the lower diagonal
+            if (j >= i_nc) {
+                break;
+            }
+
+            // in dense format: diag a1[j, j] vs a1[i, j]
+            //dlartg(R(j, 0), R(i, 0), &c, &s, &r);
+
+            double c, s, r;
+            dlartg(&a[IDX(j, 0, nz)],    // R(j, 0)
+                   &a[IDX(i, 0, nz)],    // R(i, 0)
+                   &c,
+                   &s,
+                   &r);
+
+            // rotate l.h.s.
+            a[IDX(j, 0, nz)] = r;  //R(j, 0) = r;
+            for (ssize_t l=1; l < nz; ++l) {
+                double r0, r1;
+                //  std::tie(R(j, l), R(i, l-1)) = fprota(c, s, R(j, l), R(i, l));
+                fprota(c, s, 
+                       a[IDX(j, l, nz)], a[IDX(i, l, nz)],
+                       &r0, &r1);
+                a[IDX(j, l, nz)] = r0;
+                a[IDX(i, l-1, nz)] = r1;
+            }
+            // R(i, R.ncols-1) = 0.0;
+            a[IDX(i, nz-1, nz)] = 0.0;
+
+            // rotate r.h.s.
+            for (ssize_t l=0; l < ydim1; ++l) {
+                //std::tie(y(j, l), y(i, l)) = fprota(c, s, y(j, l), y(i, l));
+                double r0, r1;
+                fprota(c, s,
+                       y[IDX(j, l, ydim1)], y[IDX(i, l, ydim1)],
+                       &r0, &r1);
+                y[IDX(j, l, ydim1)] = r0; // y(j, l) = r0;
+                y[IDX(i, l, ydim1)] = r1; // y(i, l) = r1;
+            }
+        }
+        if (i < nc) {
+            offset[i] = i;
+        }
+
+    } // for(i = ...
+}
+
 '''
 
 
@@ -585,7 +665,7 @@ TYPES = ['double']
 
 QR_MODULE = cupy.RawModule(
     code=QR_KERNEL, options=('-std=c++14',),
-    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES] , #+ ['qr_reduce'],
+    name_expressions=[f'dlartg<{type_name}>' for type_name in TYPES]  + ['qr_reduce'],
 )
 
 
@@ -620,10 +700,14 @@ def _lsq_solve_qr(x, y, t, k, w):
     c = fpback(R, nc, y1)
     return R, y1, c
 
-    """
+
+    """    
     qr_reduce = _get_module_func(QR_MODULE, 'qr_reduce')
+
+    AA = A.copy()
+
     qr_reduce((1,), (1,),
-            (A, m, k+1,
+            (AA, m, k+1,
              offset,
              nc,
              y_w, y_w.shape[1], 1)
@@ -631,10 +715,13 @@ def _lsq_solve_qr(x, y, t, k, w):
 
     breakpoint()
 
+    cc = fpback(AA, nc, y_w)
 
-    c = fpback(A, nc, y_w)
+
+
+    from cupy.testing import assert_allclose
+    assert_allclose(AA, R, atol=1e-15)
     """
-
 
 #    R = PackedMatrix(A, offset, nc)
 #    _bspl._qr_reduce(R, y_w)         # modifies arguments in-place
@@ -734,13 +821,12 @@ def _qr_reduce_py(a_p, y, startrow=1):
     y1 = y.copy()
 
     for i in range(startrow, m):
+#    for i in range(1, 2):
         oi = offset[i].item()
         for j in range(oi, nc):
             # rotate only the lower diagonal
             if j >= min(i, nc):
                 break
-#            if R[j, 0] == 0:   # XXX not in C (also scipy!)
-#                continue
 
             # In dense format: diag a1[j, j] vs a1[i, j]
             c, s, r = sc_dlartg(R[j, 0], R[i, 0])
