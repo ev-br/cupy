@@ -17,7 +17,7 @@ class TestUnivariateSpline:
 
     @testing.numpy_cupy_allclose(scipy_name='scp')
     def test_linear_constant(self, xp, scp):
-        x = xp.asarry([1, 2, 3])
+        x = xp.asarray([1, 2, 3])
         y = xp.asarray([3, 3, 3])
         lut = scp.interpolate.UnivariateSpline(x, y, k=1)
         return lut.get_knots(), lut.get_coeffs(), lut.get_residual()
@@ -45,7 +45,7 @@ class TestUnivariateSpline:
         y = xp.asarray([0, 2, 4])
         lut = scp.interpolate.UnivariateSpline(x, y, k=1)
         arg = xp.asarray([1.5, 2, 2.5])
-        return xp.shape(lut(arg)), shape(lut(arg, nu=1))
+        return xp.shape(lut(arg)), xp.shape(lut(arg, nu=1))
 
 #        assert_equal(shape(arg), shape(lut(arg)))
 #        assert_equal(shape(arg), shape(lut(arg, nu=1)))
@@ -130,9 +130,9 @@ class TestUnivariateSpline:
 
 
     def test_lsq_fpchec(self):
-        xs = xp.arange(100) * 1.
-        ys = xp.arange(100) * 1.
-        knots = xp.linspace(0, 99, 10)
+        xs = cupy.arange(100) * 1.
+        ys = cupy.arange(100) * 1.
+        knots = cupy.linspace(0, 99, 10)
         bbox = (-1, 101)
         with pytest.raises(ValueError):
             csi.LSQUnivariateSpline(xs, ys, knots, bbox=bbox)
