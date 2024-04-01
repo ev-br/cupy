@@ -154,11 +154,6 @@ class TestUnivariateSpline:
         # NB: scipy returns python floats, cupy returns 0D arrays
         return xp.asarray(vals)
 
-#            for (a, b) in [(1, 1), (1, 5), (2, 5),
-#                           (0, 0), (-2, 0), (-2, -1)]:
-#                assert_allclose(f.integral(a, b), 0, atol=1e-15)
-
-
     @pytest.mark.parametrize('s', [0, 0.1, 0.01])
     @testing.numpy_cupy_allclose(scipy_name='scp')
     def test_values(self, xp, scp, s):

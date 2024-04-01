@@ -1348,7 +1348,7 @@ class UnivariateSpline:
 
         Parameters
         ----------
-        x : array_like
+        x : ndarray
             A 1-D array of points at which to return the value of the smoothed
             spline or its derivatives. Note: `x` can be unordered but the
             evaluation is more efficient if `x` is (partially) ordered.
@@ -1367,40 +1367,28 @@ class UnivariateSpline:
             UnivariateSpline.
 
         """
-        x = cupy.asarray(x)
-        # empty input yields empty output
-        if x.size == 0:
-            return cupy.array([])
+        result = self._spl(x, nu)
+
         if ext is None:
             ext = self.ext
         else:
-            try:
-                ext = _extrap_modes[ext]
-            except KeyError as e:
+            ext = _extrap_modes.get(ext)
+            if ext is None:
                 raise ValueError("Unknown extrapolation mode %s." % ext) from e
-   #     return _fitpack_impl.splev(x, self._eval_args, der=nu, ext=ext)
-        result = self._spl(x, nu)
 
-   ##     breakpoint()
-
-        xb, xe = self._xb, self._xe
-        if ext == 1:   # "zeros"
-            result[(x < xb) | (x > xe)] = 0.
-        elif ext == 3:   # "const"
-            result[x < xb] = self._spl(xb)
-            result[x > xe] = self._spl(xe)
-        elif ext == 2:   # raise
-            if any((x < xb) | (x > xe)):
-                raise ValueError(f"Out of bounds {x=} with ext='raise'.")
+        # default is to extrapolate, do extra work for other modes
+        if ext != 0:
+            xb, xe = self._xb, self._xe
+            if ext == 1:   # "zeros"
+                result[(x < xb) | (x > xe)] = 0.
+            elif ext == 2:   # raise
+                if any((x < xb) | (x > xe)):
+                    raise ValueError(f"Out of bounds {x=} with ext='raise'.")
+            elif ext == 3:   # "const"
+                result[x < xb] = self._spl(xb)
+                result[x > xe] = self._spl(xe)
 
         return result
-
-    """
-    _extrap_modes = {0: 0, 'extrapolate': 0,
-                     1: 1, 'zeros': 1,
-                     2: 2, 'raise': 2,
-                     3: 3, 'const': 3}
-    """
 
     def get_knots(self):
         """ Return positions of interior knots of the spline.
@@ -1439,8 +1427,8 @@ class UnivariateSpline:
         integral : float
             The value of the definite integral of the spline between limits.
         """
-        #return _fitpack_impl.splint(a, b, self._eval_args)
-
+        if (a <= self._xb and b <= self._xb)  or (a >= self._xe and b >= self._xe):
+            return cupy.array(0.)
         return self._spl.integrate(a, b)
 
     def derivatives(self, x):
