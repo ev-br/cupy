@@ -1,9 +1,7 @@
 import pytest
 import cupy
 from cupy import testing
-from cupy.cuda import runtime
 
-import numpy as _np
 import cupyx.scipy.interpolate as csi  # NOQA
 
 try:
@@ -69,7 +67,8 @@ class TestUnivariateSpline:
         return spl.derivatives(3)
 
     @pytest.mark.parametrize('klass',
-                             ['UnivariateSpline', 'InterpolatedUnivariateSpline']
+                             ['UnivariateSpline',
+                              'InterpolatedUnivariateSpline']
                              )
     @pytest.mark.parametrize('ext', ['extrapolate', 'zeros', 'const'])
     @testing.numpy_cupy_allclose(scipy_name='scp', atol=1e-15)
@@ -130,4 +129,3 @@ class TestUnivariateSpline:
 
         spl.set_smoothing_factor(s=0)
         assert spl.__class__ == csi.InterpolatedUnivariateSpline
-
