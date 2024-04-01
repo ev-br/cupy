@@ -24,7 +24,7 @@ import cupy
 from cupyx.scipy.interpolate import BSpline, make_interp_spline
 
 from cupyx.scipy.interpolate._bspline2 import (
-    fpback, _not_a_knot, _lsq_solve_qr, QR_MODULE, _get_module_func
+    fpback, _not_a_knot, _lsq_solve_qr, QR_MODULE, D_BOOR_MODULE, _get_module_func
 )
 
 
@@ -826,14 +826,6 @@ def _make_splrep_impl(x, y, *, w=None, xb=None, xe=None, k=3, s=0, t=None, nest=
     f = F(x, y, t, k=k, s=s, w=w, R=R, Y=Y)
     _ = root_rati(f, p, bracket, acc)
 
-    # solve ALTERNATIVE: is roughly equivalent, gives slightly different results
-    # starting from scratch, that would have probably been tolerable;
-    # backwards compatibility dictates that we replicate the FITPACK minimizer though.
- #   f = F(x, y, t, k=k, s=s, w=w, R=R, Y=Y)
- #   from scipy.optimize import root_scalar
- #   res_ = root_scalar(f, x0=p, rtol=acc)
- #   assert res_.converged
-
     # f.spl is the spline corresponding to the found `p` value
     return f.spl
 
@@ -1197,19 +1189,35 @@ class UnivariateSpline:
     scipy.interpolate.UnivariateSpline
     """
 
-    def __init__(self, x, y, w=None, bbox=[None]*2, k=3, s=None,
-                 ext=0, check_finite=False):
+    def __init__(self, x, y, w=None, bbox=[None]*2, k=3, s=None, ext=0):
+        # NB remove checkfinite arg: it requires .any()
 
-        x, y, w, bbox, self.ext = self.validate_input(x, y, w, bbox, k, s, ext,
-                                                      check_finite)
+        if w is not None:
+            raise NotImplementedError("weighted spline fitting is not implemented")
+
+        x = cupy.asarray(x, dtype=float)
+        y = cupy.asarray(y, dtype=float)
+
+        if s is None:
+            # cf scipy/interpolate/src/fitpack.pyf, fpcurf0 wrapper
+            s = len(x)
+        xb, xe = bbox
+
+        self._spl = make_splrep(x, y, w=w, xb=xb, xe=xe, k=k, s=s)
+        self._residual = _get_residuals(
+            x, y[:, None], self._spl.t, k, w=cupy.ones(len(x), dtype=float)
+        ).sum()
+        self.ext = ext
+        self._xb = xb if xb else x[0]
+        self._xe = xe if xe else x[-1]
 
         # _data == x,y,w,xb,xe,k,s,n,t,c,fp,fpint,nrdata,ier
-        data = dfitpack.fpcurf0(x, y, k, w=w, xb=bbox[0],
-                                xe=bbox[1], s=s)
-        if data[-1] == 1:
-            # nest too small, setting to maximum bound
-            data = self._reset_nest(data)
-        self._data = data
+#        data = dfitpack.fpcurf0(x, y, k, w=w, xb=bbox[0],
+#                                xe=bbox[1], s=s)
+#        if data[-1] == 1:
+#            # nest too small, setting to maximum bound
+#            data = self._reset_nest(data)
+#        self._data = data
         self._reset_class()
 
     @staticmethod
@@ -1263,6 +1271,9 @@ class UnivariateSpline:
         return self
 
     def _reset_class(self):
+        # FIXME
+        return
+
         data = self._data
         n, t, c, k, ier = data[7], data[8], data[9], data[5], data[-1]
         self._eval_args = t[:n], c[:n], k
@@ -1359,7 +1370,7 @@ class UnivariateSpline:
         x = cupy.asarray(x)
         # empty input yields empty output
         if x.size == 0:
-            return array([])
+            return cupy.array([])
         if ext is None:
             ext = self.ext
         else:
@@ -1367,22 +1378,41 @@ class UnivariateSpline:
                 ext = _extrap_modes[ext]
             except KeyError as e:
                 raise ValueError("Unknown extrapolation mode %s." % ext) from e
-        return _fitpack_impl.splev(x, self._eval_args, der=nu, ext=ext)
+   #     return _fitpack_impl.splev(x, self._eval_args, der=nu, ext=ext)
+        result = self._spl(x, nu)
+
+   ##     breakpoint()
+
+        xb, xe = self._xb, self._xe
+        if ext == 1:   # "zeros"
+            result[(x < xb) | (x > xe)] = 0.
+        elif ext == 3:   # "const"
+            result[x < xb] = self._spl(xb)
+            result[x > xe] = self._spl(xe)
+        elif ext == 2:   # raise
+            if any((x < xb) | (x > xe)):
+                raise ValueError(f"Out of bounds {x=} with ext='raise'.")
+
+        return result
+
+    """
+    _extrap_modes = {0: 0, 'extrapolate': 0,
+                     1: 1, 'zeros': 1,
+                     2: 2, 'raise': 2,
+                     3: 3, 'const': 3}
+    """
 
     def get_knots(self):
         """ Return positions of interior knots of the spline.
 
         Internally, the knot vector contains ``2*k`` additional boundary knots.
         """
-        data = self._data
-        k, n = data[5], data[7]
-        return data[8][k:n-k]
+        k = self._spl.k
+        return self._spl.t[k:-k]
 
     def get_coeffs(self):
         """Return spline coefficients."""
-        data = self._data
-        k, n = data[5], data[7]
-        return data[9][:n-k-1]
+        return self._spl.c
 
     def get_residual(self):
         """Return weighted sum of squared residuals of the spline approximation.
@@ -1392,7 +1422,7 @@ class UnivariateSpline:
                 sum((w[i] * (y[i]-spl(x[i])))**2, axis=0)
 
         """
-        return self._data[10]
+        return self._residual
 
     def integral(self, a, b):
         """ Return definite integral of the spline between two given points.
@@ -1409,7 +1439,9 @@ class UnivariateSpline:
         integral : float
             The value of the definite integral of the spline between limits.
         """
-        return _fitpack_impl.splint(a, b, self._eval_args)
+        #return _fitpack_impl.splint(a, b, self._eval_args)
+
+        return self._spl.integrate(a, b)
 
     def derivatives(self, x):
         """ Return all derivatives of the spline at the point x.

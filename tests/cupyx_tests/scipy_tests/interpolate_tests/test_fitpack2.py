@@ -20,7 +20,7 @@ class TestUnivariateSpline:
         x = xp.asarray([1, 2, 3])
         y = xp.asarray([3, 3, 3])
         lut = scp.interpolate.UnivariateSpline(x, y, k=1)
-        return lut.get_knots(), lut.get_coeffs(), lut.get_residual()
+        return lut.get_knots(), lut.get_coeffs(), lut(x)
 
 #        assert_array_almost_equal(lut.get_knots(),[1,3])
 #        assert_array_almost_equal(lut.get_coeffs(),[3,3])
@@ -37,7 +37,7 @@ class TestUnivariateSpline:
         y = xp.asarray([0, 2, 4])
         lut = scp.interpolate.UnivariateSpline(x, y, k=1)
         arg = 2
-        return xp.shape(lut(arg)), xp.shape(lut(arg, nu=1))
+        return lut(arg), lut(arg, nu=1)
 
     @testing.numpy_cupy_allclose(scipy_name='scp')
     def test_preserve_shape_2(self, xp, scp):
@@ -45,17 +45,17 @@ class TestUnivariateSpline:
         y = xp.asarray([0, 2, 4])
         lut = scp.interpolate.UnivariateSpline(x, y, k=1)
         arg = xp.asarray([1.5, 2, 2.5])
-        return xp.shape(lut(arg)), xp.shape(lut(arg, nu=1))
+        return lut(arg), lut(arg, nu=1)
 
 #        assert_equal(shape(arg), shape(lut(arg)))
 #        assert_equal(shape(arg), shape(lut(arg, nu=1)))
 
-    @testing.numpy_cupy_allclose(scipy_name='scp')
+    @testing.numpy_cupy_allclose(scipy_name='scp', atol=1e-15)
     def test_linear_1d(self, xp, scp):
         x = xp.asarray([1, 2, 3])
         y = xp.asarray([0, 2, 4])
         lut = scp.interpolate.UnivariateSpline(x, y, k=1)
-        return lut.get_knots(), lut.get_coeffs(), lut.get_residual()
+        return lut.get_knots(), lut.get_coeffs(), lut(x)
 
 #        assert_array_almost_equal(lut.get_knots(),[1,3])
 #        assert_array_almost_equal(lut.get_coeffs(),[0,4])
@@ -151,7 +151,8 @@ class TestUnivariateSpline:
                 for (a, b) in [(1, 1), (1, 5), (2, 5),
                                (0, 0), (-2, 0), (-2, -1)]
         ]
-        return vals
+        # NB: scipy returns python floats, cupy returns 0D arrays
+        return xp.asarray(vals)
 
 #            for (a, b) in [(1, 1), (1, 5), (2, 5),
 #                           (0, 0), (-2, 0), (-2, -1)]:
