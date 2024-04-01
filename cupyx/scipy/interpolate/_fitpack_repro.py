@@ -1177,20 +1177,13 @@ class UnivariateSpline:
 
         Default is 0.
 
-    check_finite : bool, optional
-        Whether to check that the input arrays contain only finite numbers.
-        Disabling may give a performance gain, but may result in problems
-        (crashes, non-termination or non-sensical results) if the inputs
-        do contain infinities or NaNs.
-        Default is False.
-
     See Also
     --------
     scipy.interpolate.UnivariateSpline
     """
 
     def __init__(self, x, y, w=None, bbox=[None]*2, k=3, s=None, ext=0):
-        # NB remove checkfinite arg: it requires .any()
+        # NB removed the checkfinite arg: it requires .any()
 
         if w is not None:
             raise NotImplementedError("weighted spline fitting is not implemented")
@@ -1211,15 +1204,9 @@ class UnivariateSpline:
         self._xb = xb if xb else x[0]
         self._xe = xe if xe else x[-1]
 
-        # _data == x,y,w,xb,xe,k,s,n,t,c,fp,fpint,nrdata,ier
-#        data = dfitpack.fpcurf0(x, y, k, w=w, xb=bbox[0],
-#                                xe=bbox[1], s=s)
-#        if data[-1] == 1:
-#            # nest too small, setting to maximum bound
-#            data = self._reset_nest(data)
-#        self._data = data
         self._reset_class()
 
+    """
     @staticmethod
     def validate_input(x, y, w, bbox, k, s, ext, check_finite):
         x, y = cupy.asarray(x), cupy.asarray(y)
@@ -1257,18 +1244,7 @@ class UnivariateSpline:
             raise ValueError("Unknown extrapolation mode %s." % ext) from e
 
         return x, y, w, bbox, ext
-
-    @classmethod
-    def _from_tck(cls, tck, ext=0):
-        """Construct a spline object from given tck"""
-        self = cls.__new__(cls)
-        t, c, k = tck
-        self._eval_args = tck
-        # _data == x,y,w,xb,xe,k,s,n,t,c,fp,fpint,nrdata,ier
-        self._data = (None, None, None, None, None, k, None, len(t), t,
-                      c, None, None, None, None)
-        self.ext = ext
-        return self
+    """
 
     @classmethod
     def _from_spl(cls, spl, residual, xe, xb, ext=0):
@@ -1457,7 +1433,6 @@ class UnivariateSpline:
         lst = [self._spl(x, nu) for nu in range(self._spl.k+1)]
         return cupy.r_[lst]
 
-
     def derivative(self, n=1):
         """
         Construct a new spline representing the derivative of this spline.
@@ -1476,7 +1451,9 @@ class UnivariateSpline:
         spl = self._spl.derivative(n)
         # if self.ext is 'const', derivative.ext will be 'zeros'
         ext = 1 if self.ext == 3 else self.ext
-        return UnivariateSpline._from_spl(spl, ext=ext, residual=self._residual, xb=self._xb, xe=self._xe)
+        return UnivariateSpline._from_spl(
+            spl, ext=ext, residual=self._residual, xb=self._xb, xe=self._xe
+        )
 
     def antiderivative(self, n=1):
         """
@@ -1496,7 +1473,9 @@ class UnivariateSpline:
         #tck = _fitpack_impl.splantider(self._eval_args, n)
         #return UnivariateSpline._from_tck(tck, self.ext)
         spl = self._spl.antiderivative(n)
-        return UnivariateSpline._from_spl(spl, ext=self.ext, residual=self._residual, xb=self._xb, xe=self._xe)
+        return UnivariateSpline._from_spl(
+            spl, ext=self.ext, residual=self._residual, xb=self._xb, xe=self._xe
+        )
 
 
 class InterpolatedUnivariateSpline(UnivariateSpline):
@@ -1533,45 +1512,13 @@ class InterpolatedUnivariateSpline(UnivariateSpline):
 
         The default value is 0.
 
-    check_finite : bool, optional
-        Whether to check that the input arrays contain only finite numbers.
-        Disabling may give a performance gain, but may result in problems
-        (crashes, non-termination or non-sensical results) if the inputs
-        do contain infinities or NaNs.
-        Default is False.
-
     See Also
     --------
     scipy.interpolate.InterpolatedUnivariateSpline
     """
 
-    def __init__(self, x, y, w=None, bbox=[None]*2, k=3,
-                 ext=0, check_finite=False):
-
-        x, y, w, bbox, self.ext = self.validate_input(x, y, w, bbox, k, None,
-                                            ext, check_finite)
-        if not cupy.all(cupy.diff(x) > 0.0):
-            raise ValueError('x must be strictly increasing')
-
-        # _data == x,y,w,xb,xe,k,s,n,t,c,fp,fpint,nrdata,ier
-        self._data = dfitpack.fpcurf0(x, y, k, w=w, xb=bbox[0],
-                                      xe=bbox[1], s=0)
-        self._reset_class()
-
-
-_fpchec_error_string = """The input parameters have been rejected by fpchec. \
-This means that at least one of the following conditions is violated:
-
-1) k+1 <= n-k-1 <= m
-2) t(1) <= t(2) <= ... <= t(k+1)
-   t(n-k) <= t(n-k+1) <= ... <= t(n)
-3) t(k+1) < t(k+2) < ... < t(n-k)
-4) t(k+1) <= x(i) <= t(n-k)
-5) The conditions specified by Schoenberg and Whitney must hold
-   for at least one subset of data points, i.e., there must be a
-   subset of data points y(j) such that
-       t(j) < y(j) < t(j+k+1), j=1,2,...,n-k-1
-"""
+    def __init__(self, x, y, w=None, bbox=[None]*2, k=3, ext=0):
+        super().__init__(x, y, s=0, w=w, bbox=bbox, k=k, ext=ext)
 
 
 class LSQUnivariateSpline(UnivariateSpline):
@@ -1629,32 +1576,28 @@ class LSQUnivariateSpline(UnivariateSpline):
     scipy.interpolate.LSQUnivariateSpline
     """
 
-    def __init__(self, x, y, t, w=None, bbox=[None]*2, k=3,
-                 ext=0, check_finite=False):
+    def __init__(self, x, y, t, w=None, bbox=[None]*2, k=3, ext=0):
+        # NB cannot call UnivariateSpline.__init__ : it does not have the `t` arg
+        if w is not None:
+            raise NotImplementedError("weighted spline fitting is not implemented")
 
-        x, y, w, bbox, self.ext = self.validate_input(x, y, w, bbox, k, None,
-                                                      ext, check_finite)
-        if not cupy.all(cupy.diff(x) >= 0.0):
-            raise ValueError('x must be increasing')
+        x = cupy.asarray(x, dtype=float)
+        y = cupy.asarray(y, dtype=float)
 
-        # _data == x,y,w,xb,xe,k,s,n,t,c,fp,fpint,nrdata,ier
-        xb = bbox[0]
-        xe = bbox[1]
-        if xb is None:
-            xb = x[0]
-        if xe is None:
-            xe = x[-1]
+        s = len(x)
+        xb, xe = bbox
+
         t = cupy.concatenate((cupy.tile(xb, k+1),
                              t,
                              cupy.tile(xe, k+1)))
-        n = len(t)
-        if not cupy.all(t[k+1:n-k] - t[k:n-k-1] > 0, axis=0):
-            raise ValueError('Interior knots t must satisfy '
-                             'Schoenberg-Whitney conditions')
-        fpcheck(x, t, k)
 
-        data = dfitpack.fpcurfm1(x, y, k, t, w=w, xb=xb, xe=xe)
-        self._data = data[:-3] + (None, None, data[-1])
+        self._spl = make_splrep(x, y, t=t, w=w, xb=xb, xe=xe, k=k, s=s)
+        self._residual = _get_residuals(
+            x, y[:, None], self._spl.t, k, w=cupy.ones(len(x), dtype=float)
+        ).sum()
+        self.ext = ext
+        self._xb = xb if xb else x[0]
+        self._xe = xe if xe else x[-1]
+
         self._reset_class()
-
 

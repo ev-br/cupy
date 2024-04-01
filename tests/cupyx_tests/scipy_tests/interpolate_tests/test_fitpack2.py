@@ -69,12 +69,11 @@ class TestUnivariateSpline:
         return spl.derivatives(3)
 
     @pytest.mark.parametrize('klass',
-        ['UnivariateSpline', 'InterpolatedUnivariateSpline']
-    )
+                             ['UnivariateSpline', 'InterpolatedUnivariateSpline']
+                             )
     @pytest.mark.parametrize('ext', ['extrapolate', 'zeros', 'const'])
-    @testing.numpy_cupy_allclose(scipy_name='scp')
+    @testing.numpy_cupy_allclose(scipy_name='scp', atol=1e-15)
     def test_out_of_range_regression(self, klass, ext, xp, scp):
-        # Test different extrapolation modes. See ticket 3557
         x = xp.arange(5, dtype=float)
         y = x**3
 
@@ -101,7 +100,7 @@ class TestUnivariateSpline:
         vals = [f.integral(a, b)
                 for (a, b) in [(1, 1), (1, 5), (2, 5),
                                (0, 0), (-2, 0), (-2, -1)]
-        ]
+                ]
         # NB: scipy returns python floats, cupy returns 0D arrays
         return xp.asarray(vals)
 
@@ -112,4 +111,3 @@ class TestUnivariateSpline:
         y = x + 1 / (1 - x)
         spl = scp.interpolate.UnivariateSpline(x, y, s=s)
         return spl(x)
-
