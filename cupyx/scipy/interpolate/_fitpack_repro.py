@@ -1117,3 +1117,6 @@ def make_splprep(x, *, w=None, u=None, ub=None, ue=None, k=3, s=0, t=None, nest=
 
     return spl1, u
 
+
+# #################### Public FITPACK interface, OOP ################
+
