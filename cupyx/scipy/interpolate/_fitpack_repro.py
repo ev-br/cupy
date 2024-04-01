@@ -1270,6 +1270,15 @@ class UnivariateSpline:
         self.ext = ext
         return self
 
+    @classmethod
+    def _from_spl(cls, spl, residual, xe, xb, ext=0):
+        self = cls.__new__(cls)
+        self._spl = spl
+        self.ext = ext
+        self._residual = residual
+        self._xb = xb
+        self._xe = xe
+
     def _reset_class(self):
         # FIXME
         return
@@ -1444,7 +1453,10 @@ class UnivariateSpline:
         der : ndarray, shape(k+1,)
             Derivatives of the orders 0 to k.
         """
-        return _fitpack_impl.spalde(x, self._eval_args)
+        #return _fitpack_impl.spalde(x, self._eval_args)
+        lst = [self._spl(x, nu) for nu in range(self._spl.k+1)]
+        return cupy.r_[lst]
+
 
     def derivative(self, n=1):
         """
@@ -1461,10 +1473,10 @@ class UnivariateSpline:
             Spline of order k2=k-n representing the derivative of this
             spline.
         """
-        tck = _fitpack_impl.splder(self._eval_args, n)
+        spl = self._spl.derivative(n)
         # if self.ext is 'const', derivative.ext will be 'zeros'
         ext = 1 if self.ext == 3 else self.ext
-        return UnivariateSpline._from_tck(tck, ext=ext)
+        return UnivariateSpline._from_spl(spl, ext=ext, residual=self._residual, xb=self._xb, xe=self._xe)
 
     def antiderivative(self, n=1):
         """
@@ -1481,8 +1493,10 @@ class UnivariateSpline:
             Spline of order k2=k+n representing the antiderivative of this
             spline.
         """
-        tck = _fitpack_impl.splantider(self._eval_args, n)
-        return UnivariateSpline._from_tck(tck, self.ext)
+        #tck = _fitpack_impl.splantider(self._eval_args, n)
+        #return UnivariateSpline._from_tck(tck, self.ext)
+        spl = self._spl.antiderivative(n)
+        return UnivariateSpline._from_spl(spl, ext=self.ext, residual=self._residual, xb=self._xb, xe=self._xe)
 
 
 class InterpolatedUnivariateSpline(UnivariateSpline):
@@ -1630,13 +1644,15 @@ class LSQUnivariateSpline(UnivariateSpline):
             xb = x[0]
         if xe is None:
             xe = x[-1]
-        t = cupy.concatenate(([xb]*(k+1), t, [xe]*(k+1)))
+        t = cupy.concatenate((cupy.tile(xb, k+1),
+                             t,
+                             cupy.tile(xe, k+1)))
         n = len(t)
-        if not cupy.all(t[k+1:n-k]-t[k:n-k-1] > 0, axis=0):
+        if not cupy.all(t[k+1:n-k] - t[k:n-k-1] > 0, axis=0):
             raise ValueError('Interior knots t must satisfy '
                              'Schoenberg-Whitney conditions')
-        if not dfitpack.fpchec(x, t, k) == 0:
-            raise ValueError(_fpchec_error_string)
+        fpcheck(x, t, k)
+
         data = dfitpack.fpcurfm1(x, y, k, t, w=w, xb=xb, xe=xe)
         self._data = data[:-3] + (None, None, data[-1])
         self._reset_class()
