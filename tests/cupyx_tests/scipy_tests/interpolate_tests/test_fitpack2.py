@@ -111,3 +111,23 @@ class TestUnivariateSpline:
         y = x + 1 / (1 - x)
         spl = scp.interpolate.UnivariateSpline(x, y, s=s)
         return spl(x)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_set_smoothing_factor(self, xp, scp):
+        x = xp.arange(8) + 0.5
+        y = x + 1 / (1 - x)
+        spl = scp.interpolate.UnivariateSpline(x, y, s=0.1)
+        spl.set_smoothing_factor(s=0.05)
+        return spl(x)
+
+    def test_reset_class(self):
+        # SciPy weirdness: *UnivariateSpline.__class__ may change
+        x = cupy.arange(8) + 0.5
+        y = x + 1 / (1 - x)
+        spl = csi.UnivariateSpline(x, y, s=0.1)
+
+        assert spl.__class__ == csi.UnivariateSpline
+
+        spl.set_smoothing_factor(s=0)
+        assert spl.__class__ == csi.InterpolatedUnivariateSpline
+

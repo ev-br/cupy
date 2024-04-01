@@ -1190,61 +1190,22 @@ class UnivariateSpline:
 
         x = cupy.asarray(x, dtype=float)
         y = cupy.asarray(y, dtype=float)
+        xb, xe = bbox
+
+        self.ext = ext
+        self._xb = xb if xb else x[0]
+        self._xe = xe if xe else x[-1]
+        self._x = x
+        self._y = y
+        self._w = w
+        self._k = k
 
         if s is None:
             # cf scipy/interpolate/src/fitpack.pyf, fpcurf0 wrapper
             s = len(x)
-        xb, xe = bbox
 
-        self._spl = make_splrep(x, y, w=w, xb=xb, xe=xe, k=k, s=s)
-        self._residual = _get_residuals(
-            x, y[:, None], self._spl.t, k, w=cupy.ones(len(x), dtype=float)
-        ).sum()
-        self.ext = ext
-        self._xb = xb if xb else x[0]
-        self._xe = xe if xe else x[-1]
-
+        self.set_smoothing_factor(s)
         self._reset_class()
-
-    """
-    @staticmethod
-    def validate_input(x, y, w, bbox, k, s, ext, check_finite):
-        x, y = cupy.asarray(x), cupy.asarray(y)
-
-        if bbox[0] is not None and bbox[1] is not None:
-            bbox = cupy.asarray(bbox)
-        if w is not None:
-            w = cupy.asarray(w)
-        if check_finite:
-            w_finite = cupy.isfinite(w).all() if w is not None else True
-            if (not cupy.isfinite(x).all() or not cupy.isfinite(y).all() or
-                    not w_finite):
-                raise ValueError("x and y array must not contain "
-                                 "NaNs or infs.")
-        if s is None or s > 0:
-            if not cupy.all(cupy.diff(x) >= 0.0):
-                raise ValueError("x must be increasing if s > 0")
-        else:
-            if not cupy.all(cupy.diff(x) > 0.0):
-                raise ValueError("x must be strictly increasing if s = 0")
-        if x.size != y.size:
-            raise ValueError("x and y should have a same length")
-        if w is not None and not x.size == y.size == w.size:
-            raise ValueError("x, y, and w should have a same length")
-        if cupy.shape(bbox) != (2,):
-            raise ValueError("bbox shape should be (2,)")
-        if not (1 <= k <= 5):
-            raise ValueError("k should be 1 <= k <= 5")
-        if s is not None and not s >= 0.0:
-            raise ValueError("s should be s >= 0.0")
-
-        try:
-            ext = _extrap_modes[ext]
-        except KeyError as e:
-            raise ValueError("Unknown extrapolation mode %s." % ext) from e
-
-        return x, y, w, bbox, ext
-    """
 
     @classmethod
     def _from_spl(cls, spl, residual, xe, xb, ext=0):
@@ -1291,40 +1252,23 @@ class UnivariateSpline:
             # It's an unknown subclass -- don't change class. cf. #731
             pass
 
-    def _reset_nest(self, data, nest=None):
-        n = data[10]
-        if nest is None:
-            k, m = data[5], len(data[0])
-            nest = m+k+1  # this is the maximum bound for nest
-        else:
-            if not n <= nest:
-                raise ValueError("`nest` can only be increased")
-        t, c, fpint, nrdata = (cupy.resize(data[j], nest) for j in
-                               [8, 9, 11, 12])
-
-        args = data[:8] + (t, c, n, fpint, nrdata, data[13])
-        data = dfitpack.fpcurf1(*args)
-        return data
-
-    def set_smoothing_factor(self, s):
+    def set_smoothing_factor(self, s, t=None):
         """ Continue spline computation with the given smoothing
         factor s and with the knots found at the last call.
 
         This routine modifies the spline in place.
 
         """
-        data = self._data
-        if data[6] == -1:
-            warnings.warn('smoothing factor unchanged for'
-                          'LSQ spline with fixed knots',
-                          stacklevel=2)
-            return
-        args = data[:6] + (s,) + data[7:]
-        data = dfitpack.fpcurf1(*args)
-        if data[-1] == 1:
-            # nest too small, setting to maximum bound
-            data = self._reset_nest(data)
-        self._data = data
+        x, y, w, k = self._x, self._y, self._w, self._k
+        xb, xe = self._xb, self._xe
+        self._spl = make_splrep(x, y, k=k, w=w, xb=xb, xe=xe, s=s)
+
+        self._s = s
+        if w is None:
+            w = cupy.ones(y.shape[0], dtype=float)
+        if t is None:
+            t = self._spl.t
+        self._residual = _get_residuals(x, y[:, None], t, k, w=w).sum()
         self._reset_class()
 
     def __call__(self, x, nu=0, ext=None):
@@ -1578,6 +1522,7 @@ class LSQUnivariateSpline(UnivariateSpline):
 
     def __init__(self, x, y, t, w=None, bbox=[None]*2, k=3, ext=0):
         # NB cannot call UnivariateSpline.__init__ : it does not have the `t` arg
+        """
         if w is not None:
             raise NotImplementedError("weighted spline fitting is not implemented")
 
@@ -1600,4 +1545,28 @@ class LSQUnivariateSpline(UnivariateSpline):
         self._xe = xe if xe else x[-1]
 
         self._reset_class()
+        """
 
+
+        if w is not None:
+            raise NotImplementedError("weighted spline fitting is not implemented")
+
+        x = cupy.asarray(x, dtype=float)
+        y = cupy.asarray(y, dtype=float)
+        xb, xe = bbox
+
+        self.ext = ext
+        self._xb = xb if xb else x[0]
+        self._xe = xe if xe else x[-1]
+        self._x = x
+        self._y = y
+        self._w = w
+        self._k = k
+
+        # cf scipy/interpolate/src/fitpack.pyf, fpcurf0 wrapper
+        s = len(x)
+
+        fpcheck(x, t, k)
+
+        self.set_smoothing_factor(s, t)
+        self._reset_class()
