@@ -1,4 +1,4 @@
-
+import cupy
 from cupy import testing
 
 import cupyx.scipy.interpolate  # NOQA
@@ -391,3 +391,154 @@ class TestNdBSpline:
             scp.interpolate.NdBSpline.design_matrix([[1, 2]], t3, [k]*3)
 
         return dm.todense(), dm1.todense()
+
+class TestMakeND:
+
+    def _make(self, xp):
+        if xp == cupy:
+            return cupyx.scipy.interpolate._ndbspline.make_ndbspl
+        else:
+            return scipy.interpolate._ndbspline.make_ndbspl
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_2D_separable_simple(self, xp, scp):
+        x = xp.arange(6)
+        y = xp.arange(6) + 0.5
+        values = x[:, None]**3 * (y**3 + 2*y)[None, :]
+        xi = [(a, b) for a, b in itertools.product(x, y)]
+
+        make_ndbspl = self._make(xp)
+
+        bspl = make_ndbspl((x, y), values, k=1)
+        return bspl(xi)
+
+#        assert_allclose(bspl(xi), values.ravel(), atol=1e-15)
+
+        # test the coefficients vs outer product of 1D coefficients
+        spl_x = make_interp_spline(x, x**3, k=1)
+        spl_y = make_interp_spline(y, y**3 + 2*y, k=1)
+        cc = spl_x.c[:, None] * spl_y.c[None, :]
+        assert_allclose(cc, bspl.c, atol=1e-11, rtol=0)
+
+        # test against RGI
+        from scipy.interpolate import RegularGridInterpolator as RGI
+        rgi = RGI((x, y), values, method='linear')
+        assert_allclose(rgi(xi), bspl(xi), atol=1e-14)
+
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_2D_separable_trailing_dims(self, xp, scp):
+        # test `c` with trailing dimensions, i.e. c.ndim > ndim
+        x = xp.arange(6)
+        y = xp.arange(6)
+        xi = [(a, b) for a, b in itertools.product(x, y)]
+
+        # make values4.shape = (6, 6, 4)
+        values = x[:, None]**3 * (y**3 + 2*y)[None, :]
+        values4 = xp.dstack((values, values, values, values))
+
+        make_ndbspl = self._make(xp)
+        bspl = make_ndbspl((x, y), values4, k=3) # , solver=ssl.spsolve)
+
+        result = bspl(xi)
+        return result
+
+        target = xp.dstack((values, values, values, values))
+        assert result.shape == (36, 4)
+        assert_allclose(result.reshape(6, 6, 4),
+                        target, atol=1e-14)
+
+        # now two trailing dimensions
+        values22 = values4.reshape((6, 6, 2, 2))
+        bspl = make_ndbspl((x, y), values22, k=3) #, solver=ssl.spsolve)
+
+        result = bspl(xi)
+        assert result.shape == (36, 2, 2)
+        assert_allclose(result.reshape(6, 6, 2, 2),
+                        target.reshape((6, 6, 2, 2)), atol=1e-14)
+
+    @pytest.mark.parametrize('k', [(3, 3), (1, 1), (3, 1), (1, 3), (3, 5)])
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_2D_mixed(self, k, xp, scp):
+        # make a 2D separable spline w/ len(tx) != len(ty)
+        x = xp.arange(6)
+        y = xp.arange(7) + 1.5
+        xi = [(a, b) for a, b in itertools.product(x, y)]
+
+        values = (x**3)[:, None] * (y**2 + 2*y)[None, :]
+
+        make_ndbspl = self._make(xi)
+        bspl = make_ndbspl((x, y), values, k=k) #, solver=ssl.spsolve)
+        return bspl(xi)
+
+#        assert_allclose(bspl(xi), values.ravel(), atol=1e-15)
+
+    def _get_sample_2d_data(self):
+        # from test_rgi.py::TestIntepN
+        x = xp.array([.5, 2., 3., 4., 5.5, 6.])
+        y = xp.array([.5, 2., 3., 4., 5.5, 6.])
+        z = xp.array(
+            [
+                [1, 2, 1, 2, 1, 1],
+                [1, 2, 1, 2, 1, 1],
+                [1, 2, 3, 2, 1, 1],
+                [1, 2, 2, 2, 1, 1],
+                [1, 2, 1, 2, 1, 1],
+                [1, 2, 2, 2, 1, 1],
+            ]
+        )
+        return x, y, z
+
+    @pytest.mark.skip
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_2D_vs_RGI_linear(self, xp, scp):
+        x, y, z = self._get_sample_2d_data()
+        bspl = make_ndbspl((x, y), z, k=1)
+        rgi = RegularGridInterpolator((x, y), z, method='linear')
+
+        xi = xp.array([[1, 2.3, 5.3, 0.5, 3.3, 1.2, 3],
+                       [1, 3.3, 1.2, 4.0, 5.0, 1.0, 3]]).T
+
+        assert_allclose(bspl(xi), rgi(xi), atol=1e-14)
+
+    @pytest.mark.skip
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_2D_vs_RGI_cubic(self, xp, scp):
+        x, y, z = self._get_sample_2d_data()
+        bspl = make_ndbspl((x, y), z, k=3, solver=ssl.spsolve)
+        rgi = RegularGridInterpolator((x, y), z, method='cubic_legacy')
+
+        xi = xp.array([[1, 2.3, 5.3, 0.5, 3.3, 1.2, 3],
+                       [1, 3.3, 1.2, 4.0, 5.0, 1.0, 3]]).T
+
+        assert_allclose(bspl(xi), rgi(xi), atol=1e-14)
+
+    @pytest.mark.skip
+    @testing.numpy_cupy_allclose(scipy_name='scp')
+    def test_2D_vs_RGI_quintic(self, xp, scp):
+        x, y, z = self._get_sample_2d_data()
+        bspl = make_ndbspl((x, y), z, k=5, solver=ssl.spsolve)
+        rgi = RegularGridInterpolator((x, y), z, method='quintic_legacy')
+
+        xi = xp.array([[1, 2.3, 5.3, 0.5, 3.3, 1.2, 3],
+                       [1, 3.3, 1.2, 4.0, 5.0, 1.0, 3]]).T
+
+        assert_allclose(bspl(xi), rgi(xi), atol=1e-14)
+
+    @pytest.mark.skip
+    @pytest.mark.parametrize(
+        'k, meth', [(1, 'linear'), (3, 'cubic_legacy'), (5, 'quintic_legacy')]
+    )
+    def test_3D_random_vs_RGI(self, k, meth):
+        rndm = xp.random.default_rng(123456)
+        x = xp.cumsum(rndm.uniform(size=6))
+        y = xp.cumsum(rndm.uniform(size=7))
+        z = xp.cumsum(rndm.uniform(size=8))
+        values = rndm.uniform(size=(6, 7, 8))
+
+        bspl = make_ndbspl((x, y, z), values, k=k, solver=ssl.spsolve)
+        rgi = RegularGridInterpolator((x, y, z), values, method=meth)
+
+        xi = xp.random.uniform(low=0.7, high=2.1, size=(11, 3))
+        assert_allclose(bspl(xi), rgi(xi), atol=1e-14)
+
+
