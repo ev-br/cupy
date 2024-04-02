@@ -723,8 +723,10 @@ def make_ndbspl(points, values, k=3):
                              f" but order {k[d]} requires at least "
                              f" {k[d]+1} points per dimension.")
 
-    t = tuple(_not_a_knot(cupy.asarray(points[d], dtype=float), k[d])
-              for d in range(ndim))
+    t = tuple(_not_a_knot(cupy.asarray(points[d], dtype=float), k[d]) for d in range(ndim))
+
+    breakpoint()
+
     xvals = cupy.asarray([xv for xv in itertools.product(*points)], dtype=float)
 
     # construct the colocation matrix

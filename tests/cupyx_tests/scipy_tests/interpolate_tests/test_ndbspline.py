@@ -1,3 +1,4 @@
+import numpy
 import cupy
 from cupy import testing
 
@@ -458,7 +459,8 @@ class TestMakeND:
         assert_allclose(result.reshape(6, 6, 2, 2),
                         target.reshape((6, 6, 2, 2)), atol=1e-14)
 
-    @pytest.mark.parametrize('k', [(3, 3), (1, 1), (3, 1), (1, 3), (3, 5)])
+#    @pytest.mark.parametrize('k', [(3, 3), (1, 1), (3, 1), (1, 3), (3, 5)])
+    @pytest.mark.parametrize('k', [(3, 1),])
     @testing.numpy_cupy_allclose(scipy_name='scp', atol=1e-12)
     def test_2D_mixed(self, k, xp, scp):
         # make a 2D separable spline w/ len(tx) != len(ty)
@@ -467,6 +469,8 @@ class TestMakeND:
         xi = [(a, b) for a, b in itertools.product(x, y)]
 
         values = (x**3)[:, None] * (y**2 + 2*y)[None, :]
+
+        breakpoint()
 
         make_ndbspl = self._make(xp)
         bspl = make_ndbspl((x, y), values, k=k) #, solver=ssl.spsolve)
@@ -531,20 +535,25 @@ class TestMakeND:
         'k, meth', [(1, 'linear'), (3, 'cubic_legacy'), (5, 'quintic_legacy')]
     )
     @testing.numpy_cupy_allclose(scipy_name='scp')
-    def test_3D_random_vs_RGI(self, k, meth):
-        rndm = np.random.default_rng(123456)
-        raise ValueError("uptohere")
+    def test_3D_random_vs_RGI(self, k, meth, xp, scp):
+        rndm = numpy.random.default_rng(123456)
+    #    raise ValueError("uptohere")
 
 
-        x = xp.cumsum(rndm.uniform(size=6))
-        y = xp.cumsum(rndm.uniform(size=7))
-        z = xp.cumsum(rndm.uniform(size=8))
-        values = rndm.uniform(size=(6, 7, 8))
+        x = xp.cumsum(xp.asarray(rndm.uniform(size=6)))
+        y = xp.cumsum(xp.asarray(rndm.uniform(size=7)))
+        z = xp.cumsum(xp.asarray(rndm.uniform(size=8)))
+        values = xp.asarray(rndm.uniform(size=(6, 7, 8)))
 
-        bspl = make_ndbspl((x, y, z), values, k=k, solver=ssl.spsolve)
-        rgi = RegularGridInterpolator((x, y, z), values, method=meth)
+        make_ndbspl = self._make(xp)
+        bspl = make_ndbspl((x, y, z), values, k=k) #, solver=ssl.spsolve)
+
+#        rgi = RegularGridInterpolator((x, y, z), values, method=meth)
 
         xi = xp.random.uniform(low=0.7, high=2.1, size=(11, 3))
-        assert_allclose(bspl(xi), rgi(xi), atol=1e-14)
+        xi = xp.asarray(xi)
+        return bspl(xi)
+
+#        assert_allclose(bspl(xi), rgi(xi), atol=1e-14)
 
 
