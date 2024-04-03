@@ -676,6 +676,7 @@ class NdBSpline:
         data, indices, indptr = colloc_nd(xvals, _t, len_t, kk)
         return csr_matrix((data, indices, indptr))
 
+
 def make_ndbspl(points, values, k=3):
     """Construct an interpolating NdBspline.
 
@@ -724,9 +725,6 @@ def make_ndbspl(points, values, k=3):
                              f" {k[d]+1} points per dimension.")
 
     t = tuple(_not_a_knot(cupy.asarray(points[d], dtype=float), k[d]) for d in range(ndim))
-
-    breakpoint()
-
     xvals = cupy.asarray([xv for xv in itertools.product(*points)], dtype=float)
 
     # construct the colocation matrix
