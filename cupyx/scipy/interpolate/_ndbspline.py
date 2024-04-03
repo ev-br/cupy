@@ -685,7 +685,7 @@ def make_ndbspl(points, values, k=3):
     points : tuple of ndarrays of float, with shapes (m1,), ... (mN,)
         The points defining the regular grid in N dimensions. The points in
         each dimension (i.e. every element of the `points` tuple) must be
-        strictly ascending or descending.      
+        strictly ascending or descending.
     values : ndarray of float, shape (m1, ..., mN, ...)
         The data on the regular grid in n dimensions.
     k : int, optional
@@ -724,8 +724,10 @@ def make_ndbspl(points, values, k=3):
                              f" but order {k[d]} requires at least "
                              f" {k[d]+1} points per dimension.")
 
-    t = tuple(_not_a_knot(cupy.asarray(points[d], dtype=float), k[d]) for d in range(ndim))
-    xvals = cupy.asarray([xv for xv in itertools.product(*points)], dtype=float)
+    t = tuple(_not_a_knot(cupy.asarray(
+        points[d], dtype=float), k[d]) for d in range(ndim))
+    xvals = cupy.asarray(
+        [xv for xv in itertools.product(*points)], dtype=float)
 
     # construct the colocation matrix
     matr = NdBSpline.design_matrix(xvals, t, k)

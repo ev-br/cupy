@@ -400,13 +400,13 @@ class TestNdBSpline:
         xvals = [(a, b)
                  for a, b in
                  itertools.product(xp.arange(6), xp.arange(7) + 1.5)
-        ]
+                 ]
         xvals = xp.asarray(xvals)
 
         t = (xp.array([0., 0., 0., 0., 2., 3., 5., 5., 5., 5.]),
              xp.array([1.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 7.5])
-            # xp.array([1.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 7.5, 8.5])  # equal lengths
-        )
+             # xp.array([1.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 7.5, 8.5])  # equal lengths
+             )
 
         dm = scp.interpolate.NdBSpline.design_matrix(xvals, t, k)
 #        return dm.todense()
@@ -422,7 +422,8 @@ class TestMakeND:
         else:
             import functools
             import scipy.sparse.linalg as ssl
-            return functools.partial(scipy.interpolate._ndbspline.make_ndbspl, solver=ssl.spsolve)
+            return functools.partial(scipy.interpolate._ndbspline.make_ndbspl,
+                                     solver=ssl.spsolve)
 
     @testing.numpy_cupy_allclose(scipy_name='scp')
     def test_2D_separable_simple(self, xp, scp):
@@ -447,7 +448,7 @@ class TestMakeND:
         values4 = xp.dstack((values, values, values, values))
 
         make_ndbspl = self._make(xp)
-        bspl = make_ndbspl((x, y), values4, k=3) # , solver=ssl.spsolve)
+        bspl = make_ndbspl((x, y), values4, k=3)
         return bspl(xi), bspl.c
 
     @testing.numpy_cupy_allclose(scipy_name='scp', atol=1e-13)
