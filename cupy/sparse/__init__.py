@@ -1,5 +1,5 @@
-import sys
 import warnings
+
 
 def __getattr__(name):
     import cupyx.scipy.sparse
@@ -8,4 +8,4 @@ def __getattr__(name):
         warnings.warn(msg, DeprecationWarning)
         return getattr(cupyx.scipy.sparse, name)
     raise AttributeError(
-         "module 'cupy.sparse' has no attribute {!r}".format(name))
+        "module 'cupy.sparse' has no attribute {!r}".format(name))
