@@ -1,7 +1,6 @@
 import sys as _sys
 
 from cupy._core import ndarray as _ndarray
-from cupyx.scipy.sparse._base import spmatrix as _spmatrix
 
 
 try:
@@ -29,6 +28,8 @@ def get_array_module(*args):
         types of the arguments.
 
     """
+    from cupyx.scipy.sparse._base import spmatrix as _spmatrix
+
     for arg in args:
         if isinstance(arg, (_ndarray, _spmatrix)):
             return _cupyx_scipy
